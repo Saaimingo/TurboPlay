@@ -174,12 +174,48 @@ def test_watcher_signature_catches_subdir() -> None:
         check("watcher: contagem sobe", _count_items([root]) >= 2)
 
 
+# ── 9. estado de geração antiga NÃO pode enganar o código novo ────────────────
+
+
+def test_stale_state_forces_reapply() -> None:
+    """Causa do RDR2 ficar sem fork em 04/10: installed.json do v1.6 dizia
+    'já otimizado' e o código novo aceitava, sem reinstalar a stack."""
+    from src.applier import is_state_current, STATE_SCHEMA
+    p = profiles.decide(fake_game(pe_bits=64, api="DX12"),
+                        {"vendor": "nvidia", "name": "RTX 3060", "series": 30})
+
+    # entrada escrita pelo v1.6: sem schema, camadas antigas, slot winmm
+    stale = {"folder": r"C:\j", "title": "Jogo", "decision": "MFG_NVIDIA",
+             "installed_files": ["winmm.dll", "OptiScaler.ini", "version.dll"],
+             "installed_dirs": ["D3D12_Optiscaler", "Licenses"]}
+    ok, why = is_state_current(stale, p)
+    check("estado v1.6 (sem schema) →considered desatualizado", not ok, why)
+
+    # entrada nova mas com camadas erradas
+    wrong_layers = {"schema": STATE_SCHEMA, "layers": ["OptiScaler"],
+                    "dll_name": "dxgi.dll"}
+    ok2, why2 = is_state_current(wrong_layers, p)
+    check("camadas divergentes → desatualizado", not ok2, why2[:40])
+
+    # entrada nova e coerente: aí sim pode pular
+    from src.applier import state_entry_for
+    g = fake_game(pe_bits=64, api="DX12")
+    fresh = state_entry_for(g, p)
+    ok3, why3 = is_state_current(fresh, p)
+    check("estado coerente → pode pular", ok3, why3)
+    check("estado novo grava o schema", fresh.get("schema") == STATE_SCHEMA,
+          str(fresh.get("schema")))
+    check("estado novo registra as camadas", fresh.get("layers") == p.layers,
+          str(fresh.get("layers")))
+
+
 def main() -> int:
     print("TurboPlay — suite de testes\n")
     for fn in (test_pipeline_layers_per_game, test_anticheat_noop, test_xbox_protected,
                test_not_writable, test_series30_gets_dlss5_mfg, test_series50_native,
                test_amd_gets_optiscaler, test_non_dx12_noop, test_emulator_exe_filtered,
-               test_is_writable_real, test_watcher_signature_catches_subdir):
+               test_is_writable_real, test_watcher_signature_catches_subdir,
+               test_stale_state_forces_reapply):
         print(f"[{fn.__name__}]")
         fn()
         print()

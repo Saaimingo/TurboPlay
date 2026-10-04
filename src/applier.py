@@ -13,6 +13,12 @@ STATE_DIR = Path.home() / "AppData" / "Local" / "TurboPlay"
 BACKUP_DIR = STATE_DIR / "backups"
 STATE_FILE = STATE_DIR / "installed.json"
 
+# Versão do esquema do installed.json. Sobe quando a forma de instalar muda
+# (slots de DLL, pastas, INIs). Sem isso, um build velho acha que o jogo já
+# está otimizado pela stack antiga e pula — foi o que deixou o RDR2 sem fork
+# em 04/10. Toda entrada grava o esquema; o pipeline compara antes de pular.
+STATE_SCHEMA = 2
+
 # URLs oficiais (D3 do DECISOES.md) — versões pinadas, hash verificada no download
 OFFICIAL_SOURCES = {
     "OptiScaler": "https://github.com/optiscaler/OptiScaler/releases/download/v0.9.4/Optiscaler_0.9.4-final.20260718._MM.7z",
@@ -172,6 +178,17 @@ def apply_dlssnr_fork(game: Game, profile: Profile) -> tuple[bool, str]:
         for f in profile.files_to_remove:
             (folder / f).unlink(missing_ok=True)
 
+        # 5b. o fork É o OptiScaler agora — o standalone classic (winmm.dll) e o
+        # Nukems conflitam com ele e fazem o jogo recusar o hook (D12). Já estão
+        # no backup feito no início desta função.
+        removed: list[str] = []
+        for stale in ("winmm.dll", "dlssg_to_fsr3_amd_is_better.dll",
+                      "fakenvapi.dll"):
+            p = folder / stale
+            if p.exists():
+                p.unlink()
+                removed.append(stale)
+
         # 6. desinstalador próprio desta stack
         (folder / "Remove_TurboPlay.bat").write_text(
             "@echo off\r\nrem TurboPlay rollback (stack DLSS5+MFG)\r\n"
@@ -180,7 +197,10 @@ def apply_dlssnr_fork(game: Game, profile: Profile) -> tuple[bool, str]:
             "rd /S /Q OptiScaler Licenses_DLSSNR 2>nul\r\n"
             "echo TurboPlay revertido.\r\npause\r\n",
             encoding="ascii")
-        return True, "DLSS5_FORK ✓ (DLSS 5 NR + Streamline FG)"
+        msg = "DLSS5_FORK ✓ (DLSS 5 NR + Streamline FG)"
+        if removed:
+            msg += f" · removido: {', '.join(removed)}"
+        return True, msg
     except OSError as e:
         return False, f"DLSSNR_FORK ✗ (erro: {e})"
 
@@ -212,7 +232,48 @@ def _load_state() -> dict:
 
 def _save_state(state: dict) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    state["_schema"] = STATE_SCHEMA
     STATE_FILE.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def state_entry_for(game: Game, profile: Profile) -> dict:
+    """Entrada de estado coerente com o perfil que foi realmente instalado."""
+    fork = "DLSSNR_FORK" in profile.layers
+    files = [profile.dll_name, "OptiScaler.ini", "dlssg_sm86.ini"]
+    if profile.dll_name != "version.dll":
+        files.append("version.dll")
+    if fork:
+        files += ["nvngx_dlssnr.dll"]
+    return {
+        "folder": game.folder,
+        "title": game.title,
+        "decision": profile.decision,
+        "layers": list(profile.layers),
+        "dll_name": profile.dll_name,
+        "schema": STATE_SCHEMA,
+        "installed_files": files,
+        "installed_dirs": (["OptiScaler", "Licenses_DLSSNR"] if fork
+                           else ["D3D12_Optiscaler", "Licenses"]),
+    }
+
+
+def is_state_current(entry: dict, profile: Profile) -> tuple[bool, str]:
+    """O que está no disco bate com o que o perfil de hoje instalaria?
+
+    Três testes, nessa ordem: esquema (geração do estado), camadas aplicadas e
+    slot de DLL. Qualquer divergência = reinstalar, nunca assumir.
+    """
+    if not isinstance(entry, dict):
+        return False, "entrada de estado invalida"
+    if entry.get("schema") != STATE_SCHEMA:
+        return False, (f"estado de esquema {entry.get('schema', 'antigo')} "
+                       f"≠ {STATE_SCHEMA} — instalado por uma versao anterior")
+    if entry.get("layers") != list(profile.layers):
+        return False, (f"camadas no disco {entry.get('layers')} "
+                       f"≠ perfil de hoje {list(profile.layers)}")
+    if entry.get("dll_name") != profile.dll_name:
+        return False, (f"slot {entry.get('dll_name')} ≠ {profile.dll_name}")
+    return True, "estado confere com o perfil"
 
 
 def _apply_ini_overrides(ini: Path, overrides: dict) -> None:

@@ -2,13 +2,30 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from .applier import (apply_optiscaler, apply_sm86, reconfigure_optiscaler,
-                      apply_dlssnr_fork, verify, _load_state, _save_state)
+                      apply_dlssnr_fork, verify, _load_state, _save_state,
+                      state_entry_for, is_state_current)
 from .classifier import classify
 from .enabler import try_install_enabler
 from .profiles import decide, detect_gpu
 from .providers import scan_all
+
+
+def _looks_like_sm86(dll: Path) -> bool:
+    """O version.dll da pasta é o proxy dlssg_for_sm86 ou outra coisa?
+
+    O proxy carrega a string 'dlssg_sm86' no binário. Sem essa checagem,
+    reescreveríamos o version.dll original do jogo — o que pode quebrá-lo.
+    """
+    try:
+        with dll.open("rb") as fh:
+            blob = fh.read(4 << 20)
+    except OSError:
+        return False
+    low = blob.lower()
+    return b"dlssg_sm86" in low or b"dlssg_for_sm86" in low
 
 
 def _apply_layers(game, profile, layers_done: set[str]) -> dict:
@@ -23,8 +40,12 @@ def _apply_layers(game, profile, layers_done: set[str]) -> dict:
             notes.append(("OptiScaler ✓" if ok else "OptiScaler ✗ (cache ausente)"))
             ok_any = ok or ok_any
         elif layer == "SM86":
-            if profile.dll_name and profile.dll_name != "version.dll":
-                notes.append(f"SM86 ignorado: slot '{profile.dll_name}.dll' ocupado pelo fork")
+            # SM86 entra SEMPRE em version.dll (D11). O fork entra em dxgi.dll
+            # (D12) — slots diferentes, convivem. Só é pulado se o jogo já tem
+            # um version.dll que não é o proxy (ex.: NvidiaNGX original).
+            existing = Path(game.folder) / "version.dll"
+            if existing.exists() and not _looks_like_sm86(existing):
+                notes.append("SM86 ignorado: version.dll já existe e não é o proxy SM86")
                 layers_done.add(layer)
                 continue
             ok = apply_sm86(game, profile)
@@ -50,32 +71,30 @@ def optimize_one(game_id: str) -> dict:
         if g.id == game_id:
             p = decide(g, gpu)
             state = _load_state()
-            if g.id in state:
-                # Com Enabler ativo, o optiscaler.ini pertence ao OptiScaler
-                # embutido dele — não reconfigurar por cima (evita conflito).
-                if state[g.id].get("enabler"):
+            prev = state.get(g.id)
+            if prev:
+                current, why = is_state_current(prev, p)
+                if current:
+                    # Com Enabler ativo, o optiscaler.ini pertence ao OptiScaler
+                    # embutido dele — não reconfigurar por cima (evita conflito).
+                    if prev.get("enabler"):
+                        return {"applied": True, "cached": True, "decision": p.decision,
+                                "reconfigured": False, "enabler": True}
+                    ok = reconfigure_optiscaler(g, p)
                     return {"applied": True, "cached": True, "decision": p.decision,
-                            "reconfigured": False, "enabler": True}
-                # já otimizado: ainda assim re-aplica overrides (perfis evoluem)
-                ok = reconfigure_optiscaler(g, p)
-                return {"applied": True, "cached": True, "decision": p.decision,
-                        "reconfigured": ok}
+                            "reconfigured": ok}
+                # estado de geração antiga: reaplica a stack de hoje
+                notes = _install(g, p, state, dry_run=False)
+                _save_state(state)
+                return {"applied": not any("✗" in n for n in notes),
+                        "cached": False, "decision": p.decision,
+                        "reapplied": why, "notes": notes}
             if p.decision == "NOOP":
                 return {"applied": False, "noop": True, "reason": p.reason}
-            r = _apply_layers(g, p, set())
-            if r["ok"]:
-                files = [p.dll_name, "OptiScaler.ini", "dlssg_sm86.ini"]
-                if p.dll_name != "version.dll":
-                    files.append("version.dll")
-                if "DLSSNR_FORK" in p.layers:
-                    files += ["nvngx_dlssnr.dll", "dxgi.dll"]
-                state[g.id] = {"folder": g.folder, "title": g.title,
-                               "decision": p.decision,
-                               "installed_files": files,
-                               "installed_dirs": (["OptiScaler", "Licenses_DLSSNR"]
-                                                  if "DLSSNR_FORK" in p.layers
-                                                  else ["D3D12_Optiscaler", "Licenses"])}
-                _save_state(state)
+            notes = _install(g, p, state, dry_run=False)
+            _save_state(state)
+            return {"applied": not any("✗" in n for n in notes),
+                    "decision": p.decision, "notes": notes}
             return {"applied": r["ok"], "decision": p.decision, "notes": r["notes"]}
     return {"applied": False, "error": "jogo não encontrado"}
 
@@ -94,6 +113,18 @@ def get_library() -> list[dict]:
             "reason": g.blocked_reason,
         })
     return out
+
+
+def _install(g, p, state: dict, dry_run: bool) -> list[str]:
+    """Aplica as camadas do perfil e grava o estado coerente. Por jogo."""
+    if dry_run:
+        return [f"dry-run: instalaria {' + '.join(p.layers)}"]
+    # `layers_done` é SEMPRE novo: antes era compartilhado no laço e fazia o
+    # 2º jogo em diante pular todas as camadas (achado em 04/10).
+    r = _apply_layers(g, p, set())
+    if r["ok"]:
+        state[g.id] = state_entry_for(g, p)
+    return r["notes"]
 
 
 def run_full(auto_apply: bool = True, dry_run: bool = False) -> dict:
@@ -116,40 +147,31 @@ def run_full(auto_apply: bool = True, dry_run: bool = False) -> dict:
             "applied": False, "notes": [],
         }
         prev = state.get(g.id)
-        if prev:
-            if p.decision != "NOOP":
+        if prev and p.decision == "NOOP":
+            entry["notes"].append(f"registrado, sem ação: {p.reason}")
+            entry["applied"] = False
+        elif prev:
+            # O que está no disco bate com o perfil de hoje?
+            current, why = is_state_current(prev, p)
+            if current:
                 if not dry_run:
                     reconfigure_optiscaler(g, p)
-                entry["notes"].append(
-                    "já otimizado ✓" if not dry_run else "já otimizado ✓ (dry-run)")
+                entry["notes"].append("já otimizado ✓ (config revalidada)")
                 entry["applied"] = True
             else:
-                entry["notes"].append(f"registrado, sem ação: {p.reason}")
-                entry["applied"] = False
+                entry["notes"].append(f"reaplicando: {why}")
+                notes = _install(g, p, state, dry_run)
+                entry["notes"].extend(notes)
+                entry["applied"] = bool(notes) and not any("✗" in n for n in notes)
         elif auto_apply and p.decision != "NOOP":
             if dry_run:
                 entry["applied"] = True
                 entry["notes"] = [f"dry-run: instalaria {' + '.join(p.layers)}"]
                 results.append(entry)
                 continue
-            # ATENÇÃO: `layers_done` precisa ser POR JOGO. Antes era compartilhado
-            # entre iterações e fazia o 2º jogo em diante pular todas as camadas.
-            r = _apply_layers(g, p, set())
-            entry["applied"] = r["ok"]
-            entry["notes"].extend(r["notes"])
-            if r["ok"]:
-                files = [p.dll_name, "OptiScaler.ini", "dlssg_sm86.ini"]
-                if p.dll_name != "version.dll":
-                    files.append("version.dll")
-                if p.layers and "DLSSNR_FORK" in p.layers:
-                    files += ["nvngx_dlssnr.dll", "dxgi.dll"]
-                state[g.id] = {
-                    "folder": g.folder, "title": g.title, "decision": p.decision,
-                    "installed_files": files,
-                    "installed_dirs": (["OptiScaler", "Licenses_DLSSNR"]
-                                       if "DLSSNR_FORK" in p.layers
-                                       else ["D3D12_Optiscaler", "Licenses"]),
-                }
+            notes = _install(g, p, state, dry_run)
+            entry["notes"].extend(notes)
+            entry["applied"] = bool(notes) and not any("✗" in n for n in notes)
         results.append(entry)
     if not dry_run:
         _save_state(state)
