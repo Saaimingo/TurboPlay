@@ -1,0 +1,9 @@
+# artefatos de build
+build/
+dist/
+__pycache__/
+*.pyc
+
+# nada de segredo: o produto não guarda credencial, mas fica a lei
+*.env
+*.key

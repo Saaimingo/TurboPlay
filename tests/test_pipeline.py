@@ -1,0 +1,193 @@
+"""Testes do TurboPlay — sem pytest, sem dependências (D4).
+
+Rodar:  python -m tests.run_tests        (ou python tests/run_tests.py)
+
+Cobrem os defeitos achados na revisão de 04/10/2026:
+  · run_full instalava camadas só no PRIMEIRO jogo (layers_done compartilhado)
+  · jogo com anti-cheat nunca pode ser tocado
+  · instalação MSIX/Store precisa ser NOOP, não injetada
+  · executável de emulador não pode entrar na fila de otimização
+  · série 20/30/40 NVIDIA deve receber a stack DLSS 5 + MFG
+"""
+from __future__ import annotations
+
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+from src import providers, profiles
+from src.models import Game, Profile
+
+_results: list[tuple[str, bool, str]] = []
+
+
+def check(name: str, cond: bool, detail: str = "") -> None:
+    _results.append((name, bool(cond), detail))
+    print(f"  {'PASS' if cond else 'FAIL'}  {name}" + (f"  [{detail}]" if detail else ""))
+
+
+def fake_game(**kw) -> Game:
+    base = dict(id="tp_test", title="Jogo", exe_path=r"C:\j\Jogo.exe",
+                folder=r"C:\j", source="steam")
+    base.update(kw)
+    g = Game(**base)
+    return g
+
+
+# ── 1. o bug do pipeline: cada jogo recebe sua própria stack ─────────────────
+
+
+def test_pipeline_layers_per_game() -> None:
+    import src.pipeline as P
+    calls: list[tuple[str, str]] = []
+    P.apply_sm86 = lambda g, p: (calls.append(("SM86", g.title)), True)[1]
+    P.apply_optiscaler = lambda g, p: (calls.append(("OptiScaler", g.title)), True)[1]
+    P.try_install_enabler = lambda g: (calls.append(("Enabler", g.title)), (True, "ok"))[1]
+    P.reconfigure_optiscaler = lambda g, p: True
+    P.detect_gpu = lambda: {"vendor": "nvidia", "name": "RTX 3060", "driver": "", "series": 30}
+    P._load_state = lambda: {}
+    P._save_state = lambda s: None
+
+    def mk(i):
+        return Game(id=f"g{i}", title=f"Jogo {i}", exe_path=fr"C:\j{ i}\Game{i}.exe",
+                    folder=fr"C:\j{i}", source="steam")
+    P.scan_all = lambda *a, **k: [mk(1), mk(2), mk(3)]
+    P.classify = lambda g: g
+
+    # perfil que instala 2 camadas, para o bug aparecer com clareza
+    P.decide = lambda g, gpu: Profile(
+        game_id=g.id, decision="DLSS5_MFG", reason="teste",
+        layers=["SM86", "OptiScaler"], dll_name="version.dll")
+
+    P.run_full(auto_apply=True)
+    titles_with_sm86 = {t for lay, t in calls if lay == "SM86"}
+    check("pipeline: TODOS os jogos recebem SM86 (bug do layers_done)",
+          titles_with_sm86 == {"Jogo 1", "Jogo 2", "Jogo 3"},
+          f"receberam={sorted(titles_with_sm86)}")
+
+
+# ── 2. segurança: anti-cheat intocável ──────────────────────────────────────
+
+
+def test_anticheat_noop() -> None:
+    g = fake_game(anticheat=True, ac_names=["BEService.exe"], pe_bits=64)
+    p = profiles.decide(g, {"vendor": "nvidia", "name": "RTX 3060", "series": 30})
+    check("anti-cheat → NOOP", p.decision == "NOOP" and not p.layers, p.decision)
+    check("anti-cheat → motivo cita o anti-cheat",
+          "anti-cheat" in p.reason.lower(), p.reason[:40])
+
+
+# ── 3. Game Pass / MSIX é NOOP, nunca injetado ───────────────────────────────
+
+
+def test_xbox_protected() -> None:
+    g = fake_game(source="xbox", protected_install=True, writable=False,
+                  blocked_reason="pacote MSIX assinado", pe_bits=64, api="DX12")
+    p = profiles.decide(g, {"vendor": "nvidia", "name": "RTX 3060", "series": 30})
+    check("Game Pass/MSIX → NOOP", p.decision == "NOOP", p.decision)
+    check("Game Pass/MSIX → nenhuma camada", p.layers == [], str(p.layers))
+    check("Game Pass/MSIX → motivo explica", "MSIX" in p.reason, p.reason[:40])
+
+
+# ── 4. pasta sem escrita é explicada, não ignorada ───────────────────────────
+
+
+def test_not_writable() -> None:
+    g = fake_game(writable=False, pe_bits=64, api="DX12")
+    p = profiles.decide(g, {"vendor": "nvidia", "name": "RTX 3060", "series": 30})
+    check("sem escrita → NOOP", p.decision == "NOOP", p.decision)
+    check("sem escrita → motivo menciona permissão",
+          "escrita" in p.reason.lower() or "admin" in p.reason.lower(), p.reason[:40])
+
+
+# ── 5. NVIDIA série 30 recebe a stack DLSS 5 + MFG ───────────────────────────
+
+
+def test_series30_gets_dlss5_mfg() -> None:
+    g = fake_game(pe_bits=64, api="DX12", upscaler="DLSS2", fg_native=False)
+    p = profiles.decide(g, {"vendor": "nvidia", "name": "RTX 3060", "series": 30})
+    check("série 30 → decisão DLSS5_MFG", p.decision == "DLSS5_MFG", p.decision)
+    check("série 30 → fork DLSSNR + SM86", p.layers == ["DLSSNR_FORK", "SM86"], str(p.layers))
+    check("série 30 → NR habilitada",
+          p.ini_overrides.get("DlssNr/Enabled") == "true", str(p.ini_overrides.get("DlssNr/Enabled")))
+    check("série 30 → FG saída dlssg",
+          p.ini_overrides.get("FrameGen/FGOutput") == "dlssg", str(p.ini_overrides.get("FrameGen/FGOutput")))
+
+
+def test_series50_native() -> None:
+    g = fake_game(pe_bits=64, api="DX12")
+    p = profiles.decide(g, {"vendor": "nvidia", "name": "RTX 5090", "series": 50})
+    check("série 50 → MFG nativo, sem injeção", p.decision == "MFG_NATIVE", p.decision)
+    check("série 50 → nenhuma camada", p.layers == [], str(p.layers))
+
+
+def test_amd_gets_optiscaler() -> None:
+    g = fake_game(pe_bits=64, api="DX12")
+    p = profiles.decide(g, {"vendor": "amd", "name": "RX 7800", "series": 0})
+    check("AMD → OptiScaler XeFG", p.decision == "OPTISCALER_XEFG", p.decision)
+
+
+def test_non_dx12_noop() -> None:
+    g = fake_game(pe_bits=64, api="DX11")
+    p = profiles.decide(g, {"vendor": "nvidia", "name": "RTX 3060", "series": 30})
+    check("DX11 → NOOP honesto", p.decision == "NOOP", p.decision)
+
+
+# ── 6. emulador/frontend nunca entra na fila ────────────────────────────────
+
+
+def test_emulator_exe_filtered() -> None:
+    check("DuckStation filtrado", providers.is_tool_exe(r"D:\x\duckstation-qt-x64-ReleaseLTCG.exe"))
+    check("RetroArch filtrado", providers.is_tool_exe(r"D:\x\retroarch.exe"))
+    check("Jogo real NÃO filtrado", not providers.is_tool_exe(r"D:\x\RDR2.exe"))
+    check("jogo genérico NÃO filtrado", not providers.is_tool_exe(r"D:\x\Cyberpunk2077.exe"))
+
+
+# ── 7. teste real de escrita (o que decide se dá para otimizar) ──────────────
+
+
+def test_is_writable_real() -> None:
+    with tempfile.TemporaryDirectory(prefix="tp_w_") as d:
+        check("pasta comum → gravável", providers.is_writable(d))
+        check("arquivo como pasta → não gravável", not providers.is_writable(str(Path(d) / "x")))
+
+
+# ── 8. signature do watcher pega evento perdido ─────────────────────────────
+
+
+def test_watcher_signature_catches_subdir() -> None:
+    from src.watcher import _signature, _count_items
+    import time
+    with tempfile.TemporaryDirectory(prefix="tp_sig_") as d:
+        root = Path(d) / "roms"
+        ps1 = root / "ps1"
+        ps1.mkdir(parents=True)
+        before = _signature([root])
+        time.sleep(1.1)
+        (ps1 / "jogo.ps1").write_text("x")
+        after = _signature([root])
+        check("watcher: ROM nova em subpasta muda a assinatura",
+              before != after, "antes!=depois" if before != after else "PERDEU o evento")
+        check("watcher: contagem sobe", _count_items([root]) >= 2)
+
+
+def main() -> int:
+    print("TurboPlay — suite de testes\n")
+    for fn in (test_pipeline_layers_per_game, test_anticheat_noop, test_xbox_protected,
+               test_not_writable, test_series30_gets_dlss5_mfg, test_series50_native,
+               test_amd_gets_optiscaler, test_non_dx12_noop, test_emulator_exe_filtered,
+               test_is_writable_real, test_watcher_signature_catches_subdir):
+        print(f"[{fn.__name__}]")
+        fn()
+        print()
+    total = len(_results)
+    passed = sum(1 for _, ok, _ in _results if ok)
+    print(f"RESULTADO: {passed}/{total} PASS")
+    return 0 if passed == total else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
