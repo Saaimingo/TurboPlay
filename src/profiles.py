@@ -80,6 +80,13 @@ _FORK_INI = {
     "DlssNr/RunBeforeSR": "true",     # pre-SR: 1 passe
     "DlssNr/Passes": "1",
     "DlssNr/WorkingScale": "1.0",
+    # ── ponte do FG: as duas chaves abaixo são a correção documentada pelo
+    # próprio fork (docs/RTX40-MFG.md) para games que não satisfazem os
+    # requisitos de apresentação do Streamline.
+    # Sem elas o FG é recusado com 0xbad0000b (NGX recusa a arquitetura) e o
+    # log enche de "GetCurrentBackBufferIndex API must be used every frame".
+    "NvApi/DisableFlipMetering": "true",   # desliga o metering que exige flip
+    "ForceReflex": "2",                    # 0=seguir o jogo, 1=desligar, 2=LIGAR
 }
 
 # Perfis por jogo que exigem ajustes além do fork.
