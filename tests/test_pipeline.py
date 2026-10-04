@@ -209,13 +209,37 @@ def test_stale_state_forces_reapply() -> None:
           str(fresh.get("layers")))
 
 
+def test_component_version_bump_reinstalls() -> None:
+    """Atualizar o fork (0.8.7 -> 0.8.91) tem que reinstalar o componente.
+
+    Sem isso o 'apply' reaproveita o estado e o jogo continua com a DLL antiga,
+    que era exatamente o risco do D3 ('atualização de componente = PR').
+    """
+    from src.applier import is_state_current, state_entry_for, FORK_VERSION
+    g = fake_game(pe_bits=64, api="DX12")
+    p = profiles.decide(g, {"vendor": "nvidia", "name": "RTX 3060", "series": 30})
+    fresh = state_entry_for(g, p)
+    check("estado registra a versao do fork", fresh.get("fork_version") == FORK_VERSION,
+          str(fresh.get("fork_version")))
+    ok, _ = is_state_current(fresh, p)
+    check("estado na versao atual → pode pular", ok)
+
+    older = dict(fresh, fork_version="0.8.7")
+    ok2, why2 = is_state_current(older, p)
+    check("fork mais antigo → reinstalar", not ok2, why2[:46])
+
+    # upgrade que acabou de acontecer: 0.8.7 -> 0.8.91
+    if FORK_VERSION == "0.8.91":
+        check("upgrade 0.8.7→0.8.91 detectado", not ok2)
+
+
 def main() -> int:
     print("TurboPlay — suite de testes\n")
     for fn in (test_pipeline_layers_per_game, test_anticheat_noop, test_xbox_protected,
                test_not_writable, test_series30_gets_dlss5_mfg, test_series50_native,
                test_amd_gets_optiscaler, test_non_dx12_noop, test_emulator_exe_filtered,
                test_is_writable_real, test_watcher_signature_catches_subdir,
-               test_stale_state_forces_reapply):
+               test_stale_state_forces_reapply, test_component_version_bump_reinstalls):
         print(f"[{fn.__name__}]")
         fn()
         print()

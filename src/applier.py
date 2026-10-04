@@ -35,7 +35,13 @@ CACHE_DIR = Path(r"D:\Games\MFG-NVIDIA-DLSS5\_downloads")
 # ── stack DLSS5 + MFG (fork OptiScaler-DLSSNR v0.8.7 + Streamline oficial) ──
 # Hashes fixados conforme docs/RELATORIO-2026-09-22.md §3. D3 manda nunca baixar
 # "latest" às cegas: ou o hash bate, ou não instala.
-FORK_DIR = CACHE_DIR / "optiscaler_dlssnr_087" / "extracted"
+FORK_DIR = CACHE_DIR / "optiscaler_dlssnr_0891" / "standard"
+# A variante "-rtx40-mfg" traz o unlock Ada compilado dentro, mas o proprio
+# docs/RTX40-MFG.md diz: "The option defaults off and only patches RTX 40/Ada".
+# Na RTX 30 (Ampere) ele nao se aplica — o MFG aqui vem do proxy SM86 (version.dll)
+# + Streamline. Por isso usamos a variante standard, que e a correta para nos.
+FORK_VERSION = "0.8.91"
+FORK_PINNED_ZIP_SHA256 = "19a2852bb3f88e09075e3ccc66e0318c52e83a5901d9020a10384ae49d59ff77"
 STREAMLINE_DIR = CACHE_DIR / "streamline-sdk-2.14.1" / "extracted" / "bin" / "x64"
 FORK_PINNED_SHA256 = "329694af"          # prefixo do SHA256SUMS oficial do fork
 STREAMLINE_PINNED_SHA256 = "92c4d954"    # prefixo pinado no doc do fork
@@ -80,7 +86,17 @@ def _parse_sha256sums(path: Path) -> dict[str, str]:
 
 def verify_fork_integrity() -> tuple[bool, str]:
     """Confere o cache do fork, do Streamline e da runtime NR contra os hashes
-    pinados (D3). Nunca instala com hash divergente."""
+    pinados (D3). Nunca instala com hash divergente.
+
+    Além dos arquivos soltos, confere o ZIP oficial: e ele que o D3 pinou
+    (SHA256SUMS.txt do autor). O ZIP e a fonte da verdade do pacote.
+    """
+    zips = FORK_DIR.parent / "OptiScaler-NR-v0.8.91.zip"
+    if zips.exists():
+        got = _sha256(zips)
+        if got.lower() != FORK_PINNED_ZIP_SHA256:
+            return False, (f"hash do ZIP do fork diverge (esperado "
+                            f"{FORK_PINNED_ZIP_SHA256[:8]}, veio {got[:8]}) — não instalar")
     if not FORK_DIR.is_dir():
         return False, f"cache do fork ausente: {FORK_DIR}"
     ini = FORK_DIR / "OptiScaler.ini"
@@ -250,6 +266,7 @@ def state_entry_for(game: Game, profile: Profile) -> dict:
         "decision": profile.decision,
         "layers": list(profile.layers),
         "dll_name": profile.dll_name,
+        "fork_version": FORK_VERSION,
         "schema": STATE_SCHEMA,
         "installed_files": files,
         "installed_dirs": (["OptiScaler", "Licenses_DLSSNR"] if fork
@@ -268,6 +285,11 @@ def is_state_current(entry: dict, profile: Profile) -> tuple[bool, str]:
     if entry.get("schema") != STATE_SCHEMA:
         return False, (f"estado de esquema {entry.get('schema', 'antigo')} "
                        f"≠ {STATE_SCHEMA} — instalado por uma versao anterior")
+    if "DLSSNR_FORK" in profile.layers:
+        got = entry.get("fork_version")
+        if got != FORK_VERSION:
+            return False, (f"fork instalado e {got or 'antigo'} "
+                           f"≠ {FORK_VERSION} — reinstalando o componente")
     if entry.get("layers") != list(profile.layers):
         return False, (f"camadas no disco {entry.get('layers')} "
                        f"≠ perfil de hoje {list(profile.layers)}")
