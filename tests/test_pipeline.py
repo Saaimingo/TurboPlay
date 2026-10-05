@@ -233,13 +233,38 @@ def test_component_version_bump_reinstalls() -> None:
         check("upgrade 0.8.7→0.8.91 detectado", not ok2)
 
 
+def test_launcher_success_returns_no_error() -> None:
+    """Lançar um jogo Steam NÃO pode devolver erro.
+
+    Causa do popup 'O Windows não pode localizar "\\\\"' e da mensagem
+    'Não consegui abrir': o ramo Steam devolvia (None, url) — a URL ia como
+    erro, então a GUI acusava falha, e `cmd /c start` com protocolo quebrava.
+    """
+    import src.launcher as L
+    g = Game(id="x", title="RE1", exe_path=r"C:\j\bhd.exe", folder=r"C:\j",
+             source="steam", launch_path="steam://rungameid/304240",
+             steam_appid="304240")
+    opened: list[str] = []
+    original = L.os.startfile
+    L.os.startfile = opened.append
+    try:
+        popen, err = L.launch(g)
+    finally:
+        L.os.startfile = original
+    check("Steam: sucesso devolve erro VAZIO", err == "", repr(err))
+    check("Steam: chama o protocolo certo", opened == ["steam://rungameid/304240"],
+          str(opened))
+    check("Steam: popen e None (quem abre e o cliente)", popen is None)
+
+
 def main() -> int:
     print("TurboPlay — suite de testes\n")
     for fn in (test_pipeline_layers_per_game, test_anticheat_noop, test_xbox_protected,
                test_not_writable, test_series30_gets_dlss5_mfg, test_series50_native,
                test_amd_gets_optiscaler, test_non_dx12_noop, test_emulator_exe_filtered,
                test_is_writable_real, test_watcher_signature_catches_subdir,
-               test_stale_state_forces_reapply, test_component_version_bump_reinstalls):
+               test_stale_state_forces_reapply, test_component_version_bump_reinstalls,
+               test_launcher_success_returns_no_error):
         print(f"[{fn.__name__}]")
         fn()
         print()

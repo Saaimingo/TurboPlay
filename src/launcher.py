@@ -23,21 +23,32 @@ def pre_launch(game_or_id) -> dict:
 
 
 def launch(game) -> tuple[subprocess.Popen | None, str]:
-    """Lança o jogo pelo caminho mais apropriado."""
+    """Lança o jogo pelo caminho mais apropriado.
+
+    Devolve (processo, erro). O erro é VAZIO quando deu certo — inclusive no
+    caso Steam, que não dá para pegar o Popen porque quem abre é o próprio
+    cliente. Antes esta função devolvia a URL como erro e a GUI acusava falha
+    mesmo com o jogo abrindo.
+    """
     lp = game.launch_path or game.exe_path
-    folder = os.path.dirname(lp)
     try:
+        if lp.lower().startswith("steam://") or (
+                game.source == "steam" and getattr(game, "steam_appid", "")):
+            # respeita DRM/overlay da Steam. os.startfile usa a associacao do
+            # protocolo registered; `cmd /c start` com URL quebrava e o
+            # Windows reclamava de "\\".
+            url = (lp if lp.lower().startswith("steam://")
+                   else f"steam://rungameid/{game.steam_appid}")
+            os.startfile(url)
+            return None, ""
         if lp.lower().endswith(".bat"):
-            p = subprocess.Popen(["cmd", "/c", lp], cwd=folder,
+            folder = os.path.dirname(lp)
+            p = subprocess.Popen(["cmd", "/c", lp], cwd=folder or None,
                                  creationflags=subprocess.CREATE_NO_WINDOW)
-        elif game.source == "steam" and getattr(game, "steam_appid", ""):
-            # respeita DRM/overlay da Steam
-            subprocess.Popen(["cmd", "/c", f'start "" "steam://rungameid/{game.steam_appid}"'],
-                             creationflags=subprocess.CREATE_NO_WINDOW)
-            p = None
-        else:
-            p = subprocess.Popen([lp], cwd=folder)
-        return p, lp
+            return p, ""
+        folder = os.path.dirname(lp)
+        p = subprocess.Popen([lp], cwd=folder or None)
+        return p, ""
     except OSError as e:
         return None, str(e)
 
