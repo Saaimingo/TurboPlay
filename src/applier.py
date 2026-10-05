@@ -447,6 +447,78 @@ def rollback(game_id: str) -> bool:
     return True
 
 
+def fg_gate_failed(folder: str) -> bool:
+    """O jogo recusou o frame generation nesta sessao?
+
+    O proxy SM86 escreve `dlssg_sm86/logs/backend_<pid>.jsonl` com o evento
+    `fg_gate_create_feature`. Status `0xbad0000b` significa que o NGX recusou
+    a arquitetura — tipicamente porque o jogo nao cumpre o contrato de
+    apresentacao do Streamline (nao chama GetCurrentBackBufferIndex, nao tem
+    Reflex). Nao e problema de configuracao e nao adianta mexer em INI.
+    """
+    logs = Path(folder) / "dlssg_sm86" / "logs"
+    if not logs.is_dir():
+        return False
+    candidates = sorted(logs.glob("backend_*.jsonl"), key=lambda p: p.stat().st_mtime,
+                        reverse=True)
+    for lg in candidates[:3]:
+        try:
+            text = lg.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if '"fg_gate_create_feature"' not in text:
+            continue
+        if '"0xbad0000b"' in text or '"succeeded":false' in text:
+            return True
+        if '"succeeded":true' in text:
+            return False
+    return False
+
+
+def maybe_fallback_to_fsrfg(game: Game, profile: Profile) -> tuple[bool, str]:
+    """Se o jogo recusou o FG via Streamline, tenta a rota FSR.
+
+    FSR 3.1B gera frames sem depender do contrato do Streamline — e e o que
+    realmente rodava no RDR2 antes de mexermos. Nao e DLSS-G, mas e FG de
+    verdade, e o jogador recebe frames em vez de nao receber nada.
+
+    Idempotente: se ja caimos para fsrfg, nao faz nada.
+    """
+    if "DLSSNR_FORK" not in profile.layers:
+        return False, ""
+    folder = Path(game.folder)
+    ini = folder / "OptiScaler.ini"
+    if not ini.exists():
+        return False, ""
+    if not fg_gate_failed(str(folder)):
+        return False, ""
+    try:
+        current = _read_ini_value(ini, "FrameGen", "FGOutput")
+    except OSError:
+        return False, ""
+    if (current or "").lower() == "fsrfg":
+        return False, ""
+    _apply_ini_overrides(ini, {"FrameGen/FGOutput": "fsrfg"})
+    return True, ("o jogo recusou o FG do Streamline (0xbad0000b) — "
+                  "trocado para FSR 3.1B, que funciona sem esse requisito")
+
+
+def _read_ini_value(ini: Path, section: str, name: str) -> str | None:
+    """Le uma chave do INI respeitando a secao. None se nao achar."""
+    import re
+    try:
+        text = ini.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    m = re.search(rf"\[{re.escape(section)}\](.*?)(?=\n\[|\Z)", text,
+                  re.DOTALL | re.IGNORECASE)
+    if not m:
+        return None
+    k = re.search(rf"^{re.escape(name)}\s*=\s*(.+)$", m.group(1),
+                  re.MULTILINE | re.IGNORECASE)
+    return k.group(1).strip() if k else None
+
+
 def verify(game: Game) -> str:
     """Lê logs das camadas após o primeiro launch. Retorna status legível."""
     folder = Path(game.folder)

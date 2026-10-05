@@ -119,11 +119,21 @@ def classify(game: Game) -> Game:
             up = cand
     game.upscaler = up.value
 
-    # frame generation nativa (Streamline / DLSS-G)
+    # Frame generation NATIVA (o jogo já sabe fazer FG sozinho).
+    #
+    # CUIDADO: não contar os arquivos que NÓS instalamos. Depois que o fork é
+    # instalado, existe `OptiScaler/streamline/sl.dlss_g.dll` na pasta — e um
+    # rglob achando qualquer sl.dlss_g.dll declarava o jogo como "tem FG
+    # nativa". Isso se autoalimenta: instalar o fork fazia o classificador
+    # concluir que FG era nativa, e o próximo decide() parava de reinstalar.
+    def _is_ours(p: Path) -> bool:
+        parts = {x.lower() for x in p.parts}
+        return "optiscaler" in parts or "licenses_dlssnr" in parts
+
     game.fg_native = any(
-        f.exists() for f in (folder / n for n in _FG_FILES)
+        f.exists() and not _is_ours(f) for f in (folder / n for n in _FG_FILES)
     ) or any(
-        f.exists() for f in folder.rglob("sl.dlss_g.dll")
+        f.exists() and not _is_ours(f) for f in folder.rglob("sl.dlss_g.dll")
     )
 
     # anti-cheat: arquivos/pastas na árvore do jogo

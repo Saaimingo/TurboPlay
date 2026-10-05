@@ -284,6 +284,72 @@ def test_launcher_success_returns_no_error() -> None:
     check("Steam: popen e None (quem abre e o cliente)", popen is None)
 
 
+def test_classifier_ignores_our_own_streamline_dll() -> None:
+    """O classificador NÃO pode contar o sl.dlss_g.dll que nós instalamos.
+
+    Bug autoalimentado: instalar o fork cria
+    OptiScaler/streamline/sl.dlss_g.dll, e o rglob via achava e declarava
+    "FG nativa". Aí o decide() parava de reinstalar o fork.
+    """
+    import tempfile, shutil
+    from src.classifier import classify
+    from src.models import Game as _G
+    with tempfile.TemporaryDirectory(prefix="tp_cls_") as d:
+        root = Path(d)
+        (root / "OptiScaler" / "streamline").mkdir(parents=True)
+        (root / "OptiScaler" / "streamline" / "sl.dlss_g.dll").write_bytes(b"x")
+        g = classify(_G(id="t", title="Jogo", exe_path=str(root / "jogo.exe"),
+                        folder=str(root), source="steam", pe_bits=64, api="DX12"))
+        check("sl.dlss_g.dll NOSSO não conta como FG nativa",
+              g.fg_native is False, str(g.fg_native))
+
+        # mas o do jogo, na raiz, conta
+        (root / "sl.dlss_g.dll").write_bytes(b"x")
+        g2 = classify(_G(id="t", title="Jogo", exe_path=str(root / "jogo.exe"),
+                         folder=str(root), source="steam", pe_bits=64, api="DX12"))
+        check("sl.dlss_g.dll DO JOGO conta como FG nativa",
+              g2.fg_native is True, str(g2.fg_native))
+
+
+def test_fallback_to_fsrfg() -> None:
+    """Se o gate recusou (0xbad0000b), cai para fsrfg — e é idempotente."""
+    import tempfile
+    from src.applier import (maybe_fallback_to_fsrfg, fg_gate_failed,
+                             _read_ini_value)
+    from src.models import Game as _G
+    with tempfile.TemporaryDirectory(prefix="tp_fb_") as d:
+        root = Path(d)
+        logs = root / "dlssg_sm86" / "logs"
+        logs.mkdir(parents=True)
+        (logs / "backend_999.jsonl").write_text(
+            '{"event":"fg_gate_create_feature","status":"0xbad0000b","succeeded":false}',
+            encoding="utf-8")
+        ini = root / "OptiScaler.ini"
+        ini.write_text("[FrameGen]\nEnabled = true\nFGOutput = DLSSG\n",
+                       encoding="utf-8")
+        check("detecta a recusa nos logs", fg_gate_failed(str(root)) is True)
+
+        g = _G(id="t", title="Jogo", exe_path=str(root / "jogo.exe"),
+               folder=str(root), source="steam")
+        p = profiles.Profile(game_id=g.id, decision="DLSS5_MFG", reason="",
+                             layers=["DLSSNR_FORK", "SM86"], dll_name="dxgi.dll")
+        ok, why = maybe_fallback_to_fsrfg(g, p)
+        check("fallback aplica", ok is True, why[:40])
+        check("INI passa a FSRFG",
+              (_read_ini_value(ini, "FrameGen", "FGOutput") or "").lower() == "fsrfg",
+              str(_read_ini_value(ini, "FrameGen", "FGOutput")))
+        ok2, _ = maybe_fallback_to_fsrfg(g, p)
+        check("fallback e idempotente (2a vez nao faz nada)", ok2 is False)
+
+        # se o gate passou, não mexe
+        (logs / "backend_998.jsonl").write_text(
+            '{"event":"fg_gate_create_feature","status":"0x0","succeeded":true}',
+            encoding="utf-8")
+        ini.write_text("[FrameGen]\nFGOutput = DLSSG\n", encoding="utf-8")
+        ok3, _ = maybe_fallback_to_fsrfg(g, p)
+        check("gate OK → nao mexe no INI", ok3 is False)
+
+
 def main() -> int:
     print("TurboPlay — suite de testes\n")
     for fn in (test_pipeline_layers_per_game, test_anticheat_noop, test_xbox_protected,
@@ -291,7 +357,8 @@ def main() -> int:
                test_amd_gets_optiscaler, test_non_dx12_noop, test_emulator_exe_filtered,
                test_is_writable_real, test_watcher_signature_catches_subdir,
                test_stale_state_forces_reapply, test_component_version_bump_reinstalls,
-               test_launcher_success_returns_no_error, test_native_fg_not_overridden_by_fork):
+               test_launcher_success_returns_no_error, test_native_fg_not_overridden_by_fork,
+               test_classifier_ignores_our_own_streamline_dll, test_fallback_to_fsrfg):
         print(f"[{fn.__name__}]")
         fn()
         print()

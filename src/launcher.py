@@ -79,11 +79,26 @@ def launch(game) -> tuple[subprocess.Popen | None, str]:
 
 
 def post_launch_watch(game, popen: subprocess.Popen | None) -> None:
-    """Thread: espera o jogo fechar e verifica as camadas (toast)."""
+    """Thread: espera o jogo fechar e verifica as camadas (toast).
+
+    Aproveita a sessao que acabou de rodar para decidir o fallback: se o jogo
+    recusou o FG do Streamline, cai para FSR e avisa. E a unica forma de
+    descobrir isso — so da para tentar e ler o log.
+    """
     def work():
         try:
             if popen is not None:
                 popen.wait()
+            # o jogo acabou de rodar: ja wrote os logs
+            try:
+                from .applier import maybe_fallback_to_fsrfg
+                from .profiles import decide, detect_gpu
+                profile = decide(game, detect_gpu())
+                changed, why = maybe_fallback_to_fsrfg(game, profile)
+                if changed:
+                    notify("TurboPlay", f"{game.title}: {why}")
+            except Exception:
+                pass
             status = verify(game)
             if status == "MFG_NVIDIA_OK":
                 notify("TurboPlay", f"{game.title}: frame generation NVIDIA ativa ✓")
