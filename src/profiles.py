@@ -168,6 +168,18 @@ def decide(game: Game, gpu: dict) -> Profile:
 
     series = gpu.get("series", 0)
     if series in (20, 30, 40):
+        # Jogo que JÁ tem FG nativa (nvngx_dlssg.dll / sl.dlss_g.dll): ela
+        # funciona sozinha. O proxy SM86 destrava o MFG 2x-6x em cima dela —
+        # sem injetar o OptiScaler por cima, que brigaria com o DLSS-G do
+        # próprio jogo e poderia derrubar o que ja funciona.
+        if game.fg_native:
+            return _mk_profile(
+                game, "MFG_NATIVE",
+                f"FG nativa do jogo + proxy SM86: destrava MFG 2x-4x na série "
+                f"{series} sem encostar no upscaler",
+                layers=["SM86"], dll_name="version.dll")
+        # Sem FG nativa: o jogo nao tem o que multiplicar. Aí sim entra o fork
+        # para synthesizar FG a partir do upscaler.
         return _mk_profile(
             game, "DLSS5_MFG",
             f"DLSS 5 Neural Render + MFG NVIDIA (2x-4x) na série {series} — "

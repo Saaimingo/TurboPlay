@@ -117,6 +117,32 @@ def test_series30_gets_dlss5_mfg() -> None:
           p.ini_overrides.get("FrameGen/FGOutput") == "dlssg", str(p.ini_overrides.get("FrameGen/FGOutput")))
 
 
+def test_native_fg_not_overridden_by_fork() -> None:
+    """Jogo com FG nativa nao pode receber o fork por cima.
+
+    Era o que aconteceria com The Last of Us II Remastered: o jogo ja tem
+    DLSS-G funcionando, e enfiar o OptiScaler/dxgi.dll encima arriscava
+    derrubar o FG nativo. Aqui so entra o proxy SM86.
+    """
+    g = fake_game(pe_bits=64, api="DX12", upscaler="DLSS2", fg_native=True)
+    p = profiles.decide(g, {"vendor": "nvidia", "name": "RTX 3060", "series": 30})
+    check("FG nativa (série 30) → MFG_NATIVE, não DLSS5_MFG",
+          p.decision == "MFG_NATIVE", p.decision)
+    check("FG nativa → só proxy SM86, sem fork",
+          p.layers == ["SM86"], str(p.layers))
+    check("FG nativa → não escreve OptiScaler.ini do fork",
+          not p.ini_overrides, str(p.ini_overrides))
+    check("FG nativa → usa o slot version.dll",
+          p.dll_name == "version.dll", p.dll_name)
+
+    # sem FG nativa continua sendo a rota do fork
+    g2 = fake_game(pe_bits=64, api="DX12", upscaler="DLSS2", fg_native=False)
+    p2 = profiles.decide(g2, {"vendor": "nvidia", "name": "RTX 3060", "series": 30})
+    check("sem FG nativa → continua DLSS5_MFG + fork",
+          p2.decision == "DLSS5_MFG" and p2.layers == ["DLSSNR_FORK", "SM86"],
+          f"{p2.decision} {p2.layers}")
+
+
 def test_series50_native() -> None:
     g = fake_game(pe_bits=64, api="DX12")
     p = profiles.decide(g, {"vendor": "nvidia", "name": "RTX 5090", "series": 50})
@@ -265,7 +291,7 @@ def main() -> int:
                test_amd_gets_optiscaler, test_non_dx12_noop, test_emulator_exe_filtered,
                test_is_writable_real, test_watcher_signature_catches_subdir,
                test_stale_state_forces_reapply, test_component_version_bump_reinstalls,
-               test_launcher_success_returns_no_error):
+               test_launcher_success_returns_no_error, test_native_fg_not_overridden_by_fork):
         print(f"[{fn.__name__}]")
         fn()
         print()
