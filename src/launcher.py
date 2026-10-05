@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import subprocess
 import threading
+from pathlib import Path
 
 from .notify import notify
 from .applier import _load_state, verify
@@ -22,25 +23,49 @@ def pre_launch(game_or_id) -> dict:
     return optimize_one(gid)
 
 
+def _steam_exe() -> str:
+    """steam.exe real. Sem isso, Steam em outro lugar nao é encontrado."""
+    for p in (r"C:\Program Files (x86)\Steam\steam.exe",
+              r"C:\Program Files\Steam\steam.exe"):
+        if os.path.isfile(p):
+            return p
+    # tenta pelo proprio vaporlib do scan
+    try:
+        from .providers import steam_libraries
+        for lib in steam_libraries():
+            cand = Path(lib).parent.parent / "steam.exe"
+            if cand.is_file():
+                return str(cand)
+    except Exception:
+        pass
+    return ""
+
+
 def launch(game) -> tuple[subprocess.Popen | None, str]:
     """Lança o jogo pelo caminho mais apropriado.
 
-    Devolve (processo, erro). O erro é VAZIO quando deu certo — inclusive no
-    caso Steam, que não dá para pegar o Popen porque quem abre é o próprio
-    cliente. Antes esta função devolvia a URL como erro e a GUI acusava falha
-    mesmo com o jogo abrindo.
+    Devolve (processo, erro). O erro é VAZIO quando deu certo.
+
+    Steam: usa `steam.exe -applaunch <appid>` em vez do protocolo `steam://`.
+    Medido nesta máquina: o protocolo retorna sem erro e não abre nada; o
+    -applaunch abre. Se nem o steam.exe for achado, cai para o exe direto
+    (funciona para jogo sem DRM) e só ai o erro é reportado.
     """
     lp = game.launch_path or game.exe_path
+    appid = getattr(game, "steam_appid", "")
     try:
-        if lp.lower().startswith("steam://") or (
-                game.source == "steam" and getattr(game, "steam_appid", "")):
-            # respeita DRM/overlay da Steam. os.startfile usa a associacao do
-            # protocolo registered; `cmd /c start` com URL quebrava e o
-            # Windows reclamava de "\\".
-            url = (lp if lp.lower().startswith("steam://")
-                   else f"steam://rungameid/{game.steam_appid}")
-            os.startfile(url)
-            return None, ""
+        if appid and (game.source == "steam" or lp.lower().startswith("steam://")):
+            exe = _steam_exe()
+            if exe:
+                subprocess.Popen([exe, "-applaunch", str(appid)],
+                                 creationflags=subprocess.CREATE_NO_WINDOW)
+                return None, ""
+            # sem steam.exe achado: tenta o proprio jogo (pode falhar em DRM)
+            if os.path.isfile(game.exe_path):
+                folder = os.path.dirname(game.exe_path)
+                p = subprocess.Popen([game.exe_path], cwd=folder or None)
+                return p, ""
+            return None, "Steam nao encontrado e o executavel do jogo nao existe"
         if lp.lower().endswith(".bat"):
             folder = os.path.dirname(lp)
             p = subprocess.Popen(["cmd", "/c", lp], cwd=folder or None,

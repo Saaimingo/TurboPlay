@@ -244,16 +244,17 @@ def test_launcher_success_returns_no_error() -> None:
     g = Game(id="x", title="RE1", exe_path=r"C:\j\bhd.exe", folder=r"C:\j",
              source="steam", launch_path="steam://rungameid/304240",
              steam_appid="304240")
-    opened: list[str] = []
-    original = L.os.startfile
-    L.os.startfile = opened.append
+    calls: list[list] = []
+    original = L.subprocess.Popen
+    L.subprocess.Popen = lambda a, **k: calls.append(a) or None
     try:
         popen, err = L.launch(g)
     finally:
-        L.os.startfile = original
+        L.subprocess.Popen = original
     check("Steam: sucesso devolve erro VAZIO", err == "", repr(err))
-    check("Steam: chama o protocolo certo", opened == ["steam://rungameid/304240"],
-          str(opened))
+    check("Steam: usa -applaunch, nao o protocolo quebrado",
+          bool(calls) and calls[0][1:] == ["-applaunch", "304240"],
+          str(calls[0][1:]) if calls else "nenhuma chamada")
     check("Steam: popen e None (quem abre e o cliente)", popen is None)
 
 
