@@ -1,0 +1,15 @@
+[project]
+name = "TurboPlay"
+version = "2.6.0"
+description = "Injeção automática de perfis gráficos (DLSS 5 / MFG / OptiScaler) por jogo, reversível, vendor-agnostic e zero interação."
+license = {text = "MIT"}
+requires-python = ">=3.8"
+
+authors = [{name = "Saimon", email = "saimon@local"}]
+
+[project.urls]
+Homepage = "https://github.com/Saaimingo/TurboPlay"
+Repository = "https://github.com/Saaimingo/TurboPlay"
+
+[project.scripts]
+turboplay = "src.main:main"

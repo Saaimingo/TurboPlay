@@ -1,6 +1,7 @@
 """TurboPlay — classificação de jogos: API gráfica, upscaler, FG nativa, anti-cheat."""
 from __future__ import annotations
 
+import re
 import struct
 from pathlib import Path
 
@@ -22,6 +23,36 @@ _UPSCALER_FILES = {
     "ffx_fsr3updater_x64.dll": Upscaler.FSR2,
 }
 _FG_FILES = ["sl.dlss_g.dll", "nvngx_dlssg.dll", "sl.dlssg.dll"]
+
+_ENGINE_CONFIG_HINTS = (
+    "_config.ini", "_settings.ini",  # re3_config.ini, re8_config.ini...
+)
+
+
+def _api_from_engine_config(exe: Path) -> API | None:
+    """Lê o config do próprio executável (RE Engine e similares) e devolve
+    a API declarada. None quando não há config com a chave conhecida."""
+    folder = exe.parent
+    candidates = [folder / f"{exe.stem}_config.ini"]
+    candidates += sorted(folder.glob("*_config.ini"))
+    for ini in candidates:
+        if not ini.is_file():
+            continue
+        try:
+            text = ini.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        value = ""
+        for line in text.splitlines():
+            # Capability / TargetPlatform / PCDXver = DirectX12|DirectX11
+            if re.match(r"(?i)^(Capability|TargetPlatform|PCDXver)\s*=", line):
+                value = line.split("=", 1)[1].strip().lower()
+                break
+        if "directx12" in value or value == "dx12":
+            return API.DX12
+        if "directx11" in value or value == "dx11":
+            return API.DX11
+    return None
 
 
 def _pe_header(exe: Path) -> tuple[int, list[str]]:
@@ -107,6 +138,15 @@ def classify(game: Game) -> Game:
     if best.value in ("DX9", "DX10", "UNKNOWN"):
         if "fsr2_api_dx12" in imp_text or "nvngx" in imp_text or "sl.dlss" in imp_text:
             best = API.DX12
+
+    # RE Engine (Capcom) e outros jogos multi-API escolhem a API por config.
+    # O exe importa d3d11.dll estaticamente, mas re3_config.ini declara
+    # Capability=DirectX12 — o jogo RODA em DX12 (achado 09/10 com RE3:
+    # classificador dizia DX11 e a matriz devolvia NOOP sem instalar nada).
+    # O config do jogo é a fonte da verdade, não o import.
+    cfg_api = _api_from_engine_config(exe)
+    if cfg_api:
+        best = cfg_api
     game.api = best.value
 
     # upscaler presente — prioriza DLSS2 (habilita a ponte MFG NVIDIA);

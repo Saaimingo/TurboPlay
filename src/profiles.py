@@ -16,8 +16,14 @@ Ordem de decisão (primeira que casa vence):
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 from .models import Game, Profile
+
+# Executáveis de RE Engine pré-DLSS3: nascidos antes de existir FG nativa.
+# Ter os DLLs do DLSS-G na pasta não significa que o jogo os chame.
+_REENGINE_PRE_FG_EXES = {"re2.exe", "re3.exe", "re7.exe", "re8.exe",
+                         "dmc5.exe"}
 
 # ── componentes da stack DLSS5+MFG (validados em 22/09, decisão D12) ─────────
 FORK_LAYER = "DLSSNR_FORK"
@@ -74,6 +80,8 @@ _FORK_INI = {
     "DLSSG/InterpolationCount": "1",  # 2x total; 2/3 => 3x/4x
     "V-Sync/OverrideVsync": "true",
     "V-Sync/ForceVsync": "false",
+    "Menu/OverlayMenu": "true",      # RE Engine antigo: auto cai no overlay velho e o Insert não abre (achado 09/10 com RE3)
+    "Menu/UseHQFont": "false",
     "Log/LogToFile": "true",
     "Log/LogLevel": "2",
     "DlssNr/Enabled": "true",
@@ -160,7 +168,7 @@ def decide(game: Game, gpu: dict) -> Profile:
             f"API {game.api} não suporta DLSS/MFG injetável (rota alternativa futura)")
 
     # 5. NVIDIA série 20/30/40: aqui mora o DLSS5 + MFG
-    if gpu["vendor"] != "nvidia":
+    if gpu["vendor"] != "nvidia":  # rota AMD/Intel permanece a mesma
         return _mk_profile(
             game, "OPTISCALER_XEFG",
             f"GPU {gpu['name']}: OptiScaler com frame gen FSR/XeSS",
@@ -168,24 +176,41 @@ def decide(game: Game, gpu: dict) -> Profile:
 
     series = gpu.get("series", 0)
     if series in (20, 30, 40):
-        # Jogo que JÁ tem FG nativa (nvngx_dlssg.dll / sl.dlss_g.dll): ela
-        # funciona sozinha. O proxy SM86 destrava o MFG 2x-6x em cima dela —
-        # sem injetar o OptiScaler por cima, que brigaria com o DLSS-G do
-        # próprio jogo e poderia derrubar o que ja funciona.
-        if game.fg_native:
-            return _mk_profile(
-                game, "MFG_NATIVE",
-                f"FG nativa do jogo + proxy SM86: destrava MFG 2x-4x na série "
-                f"{series} sem encostar no upscaler",
-                layers=["SM86"], dll_name="version.dll")
-        # Sem FG nativa: o jogo nao tem o que multiplicar. Aí sim entra o fork
-        # para synthesizar FG a partir do upscaler.
+        # Stack única (decisão 09/10, Saimon): fork OptiScaler-DLSSNR
+        # (repack comunitário) em TODOS os jogos DX12 da série 20/30/40 —
+        # inclusive os com FG nativa. O repack substitui o DLSS-G do jogo
+        # com elegância (FGNvngxReplacement) e é o setup que o titular
+        # validou manualmente. Antes: jogos com fg_native recebiam só o
+        # proxy SM86 (MFG_NATIVE) e ficavam SEM overlay — o Insert nem
+        # abria. Com o fork sempre presente, Insert menu + DLSS 5 NR + MFG
+        # ficam disponíveis igual ao setup manual.
+        #
+        # FG Output por tipo de jogo (achado 09/10 com RE3):
+        # - COM FG nativa: FGOutput=DLSSG (delega pro Streamline/DLSS-G;
+        #   o jogo pede frames, rota estável MFG até 4x)
+        # - SEM FG nativa (RE3 2020 etc.): FGOutput=fsrfg via OptiFG —
+        #   o jogo nunca chama slDLSSGSetState, então rota dlssg fica
+        #   parada (44 fps medido, zero frames gerados). FSR3-FG
+        #   sintetiza frames do upscaler sem o jogo pedir nada.
+        #   Experimental segundo a wiki do OptiScaler (HUDFix pode ser
+        #   necessário em jogo com HUD complexo), mas é a única rota que
+        #   entrega FG aqui.
+        ini = dict(_FORK_INI)
+        # RE Engine antigo (RE2/RE3/RE7/RE8/DMC5): o jogo EMBARCA os DLLs do
+        # DLSS-G, então o classificador reporta fg_native=True — mas o jogo
+        # NUNCA chama slDLSSGSetState (jogos pré-DLSS3). Log do RE3 em 09/10
+        # provou: zero chamadas, 44 fps. Força a rota OptiFG (FSR3-FG) sempre,
+        # independente do fg_native e com prioridade sobre o dlssg herdado.
+        ex_lower = Path(game.exe_path).name.lower()
+        if ex_lower in _REENGINE_PRE_FG_EXES:
+            ini["FrameGen/FGOutput"] = "fsrfg"
+            ini["FrameGen/FGNvngxReplacement"] = "FFX"
+            ini["OptiFG/HUDFix"] = "true"
         return _mk_profile(
             game, "DLSS5_MFG",
-            f"DLSS 5 Neural Render + MFG NVIDIA (2x-4x) na série {series} — "
-            f"fork OptiScaler-DLSSNR + proxy SM86",
+            f"DLSS 5 Neural Render + {'FSR3-FG (OptiFG, jogo sem FG nativa)' if not game.fg_native else 'MFG NVIDIA (2x-6x, rota dlssg)'} na série {series}",
             layers=[FORK_LAYER, "SM86"],
-            ini_overrides=_FORK_INI, dll_name="dxgi.dll")
+            ini_overrides=ini)
 
     if series >= 50:
         return _mk_profile(

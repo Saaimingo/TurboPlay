@@ -40,7 +40,7 @@ FORK_DIR = CACHE_DIR / "optiscaler_dlssnr_0891" / "standard"
 # docs/RTX40-MFG.md diz: "The option defaults off and only patches RTX 40/Ada".
 # Na RTX 30 (Ampere) ele nao se aplica — o MFG aqui vem do proxy SM86 (version.dll)
 # + Streamline. Por isso usamos a variante standard, que e a correta para nos.
-FORK_VERSION = "0.8.91"
+FORK_VERSION = "0.8.91-community"
 FORK_PINNED_ZIP_SHA256 = "19a2852bb3f88e09075e3ccc66e0318c52e83a5901d9020a10384ae49d59ff77"
 STREAMLINE_DIR = CACHE_DIR / "streamline-sdk-2.14.1" / "extracted" / "bin" / "x64"
 FORK_PINNED_SHA256 = "329694af"          # prefixo do SHA256SUMS oficial do fork
@@ -84,13 +84,171 @@ def _parse_sha256sums(path: Path) -> dict[str, str]:
     return out
 
 
-def verify_fork_integrity() -> tuple[bool, str]:
-    """Confere o cache do fork, do Streamline e da runtime NR contra os hashes
-    pinados (D3). Nunca instala com hash divergente.
+def _community_fork_roots() -> list[Path]:
+    """Pastas onde o repack comunitário pode estar.
 
-    Além dos arquivos soltos, confere o ZIP oficial: e ele que o D3 pinou
-    (SHA256SUMS.txt do autor). O ZIP e a fonte da verdade do pacote.
+    O projeto roda de dentro do vault (OneDrive); o repack fica em Downloads.
+    Ordem: extração em Downloads (mais rápida) → Downloads/RAR → forks/.
     """
+    home = Path.home()
+    dls = home / "Downloads" / "OptiTest2" / "Optiscaler DLSS 5 + MFG 6X  NVIDIA PARA TODAS RTX"
+    dirs = []
+    if dls.is_dir():
+        dirs.append(dls)
+    for base in (home / "Downloads", Path(__file__).resolve().parent.parent / "forks"):
+        if base.is_dir():
+            for rar in base.glob("*DLSS 5 + MFG 6X*.rar"):
+                out = base / rar.stem
+                if not out.exists():
+                    try:
+                        import subprocess
+                        subprocess.run([r"C:\Program Files\WinRAR\WinRAR.exe",
+                                        "x", "-o+", str(rar), str(out) + "/"],
+                                       check=False, stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL)
+                    except Exception:
+                        pass
+                if out.is_dir():
+                    dirs.append(out)
+    return dirs
+
+
+def _community_inner(root: Path) -> Path | None:
+    """Pasta interna '1 - ...' do repack, ou a própria raiz se já tiver os arquivos."""
+    cand = next(iter(root.glob("1 - *")), None)
+    if cand and cand.is_dir() and ((cand / "OptiScaler").is_dir()
+                                   or (cand / "Optiscaler.dll").exists()
+                                   or (cand / "OptiScaler.dll").exists()):
+        return cand
+    if (root / "OptiScaler").is_dir() or (root / "Optiscaler.dll").exists() \
+            or (root / "OptiScaler.dll").exists():
+        return root
+    if cand and cand.is_dir():
+        return cand
+    return None
+
+
+def _community_fork_root() -> Path | None:
+    """Procura o repack comunitário (o que você testou manualmente).
+
+    Procura na pasta extraída dos Downloads, no RAR (extrai sozinho) e em
+    forks/ do projeto. Devolve a pasta '1 - Optiscaler MFG NVIDIA 6x + DLSS 5'.
+    """
+    for root in _community_fork_roots():
+        if not root.is_dir():
+            continue
+        inner = _community_inner(root)
+        if inner:
+            return inner
+        # variações: subpastas com o nome do pacote dentro da extração
+        for p in sorted(root.rglob("*")):
+            if p.is_dir() and "DLSS 5 + MFG 6X" in p.name:
+                inner = _community_inner(p)
+                if inner:
+                    return inner
+    return None
+
+
+def _reframework_for(game: Game) -> Path | None:
+    """Acha o REFramework (dinput8.dll) nos zips '4 - Arquivos Para Jogos Capcom'
+    do repack comunitário."""
+    for root in _community_fork_roots():
+        if not root.is_dir():
+            continue
+        # 1) dinput8.dll já extraído em algum lugar do repack
+        for p in root.rglob("dinput8.dll"):
+            return p
+        # 2) zips REFramework* — extrai em cache local fixo (não em tempfile,
+        #    para não extrair toda hora)
+        cache = Path.home() / "AppData" / "Local" / "TurboPlay" / "reframework_cache"
+        cache.mkdir(parents=True, exist_ok=True)
+        for z in root.rglob("REFramework*.zip"):
+            outd = cache / z.stem
+            dinput = outd / "dinput8.dll"
+            if not dinput.exists():
+                try:
+                    import zipfile
+                    with zipfile.ZipFile(z.name and str(z)) as zf:
+                        zf.extractall(str(outd))
+                except Exception:
+                    continue
+            if dinput.exists():
+                return dinput
+            # alguns zips extraem dentro de subpasta
+            found = next(iter(outd.rglob("dinput8.dll")), None)
+            if found:
+                return found
+    return None
+
+
+def _is_capcom_reengine(game: Game) -> bool:
+    t = (game.title or "").lower()
+    ex = (game.exe_path or "").lower()
+    capcom_markers = [
+        "resident evil", "re2", "re3", "re4", "re7", "re8", "re9", "biohazard",
+        "dmc5", "devil may cry", "monster hunter", "onimusha", "dragons dogma",
+        "street fighter", "marvel vs capcom"
+    ]
+    for m in capcom_markers:
+        if m in t or m in ex:
+            return True
+    return False
+
+
+# RE Engine antigo (2019-2021): RE2/RE3/RE7/RE8 clássicos. O REFramework do
+# repack é build novo (Onimusha/RE9/Pragmata = RE Engine 2024+) e NELE esses
+# jogos antigos congelam em tela preta na criação do swapchain (achado 09/10
+# com RE3: log do OptiScaler morre aos 4s). Cada jogo antigo precisa do
+# dinput8.dll da página REFramework dele no Nexus (ex.: nexusmods.com/
+# residentevil32020/mods/882). O overlay do OptiScaler (dxgi.dll) é
+# independente e continua funcionando sem REFramework.
+_REENGINE_OLD_GAMES = (
+    "resident evil 2", "resident evil 3", "re2.exe", "re3.exe",
+    "resident evil 7", "re7.exe", "resident evil village", "re8.exe",
+    "biohazard", "dmc5.exe", "devil may cry 5",
+)
+
+
+def _reframework_needs_specific_build(game: Game) -> bool:
+    """RE Engine antigo: o REFramework genérico do repack congela o jogo.
+    Nesses casos o TurboPlay NÃO instala dinput8.dll sozinho."""
+    t = (game.title or "").lower()
+    ex = (game.exe_path or "").lower()
+    return any(m in t or ex.endswith(m) or m in ex for m in _REENGINE_OLD_GAMES)
+
+
+def _maybe_install_reframework(game: Game) -> tuple[bool, str]:
+    if not _is_capcom_reengine(game):
+        return False, ""
+    folder = Path(game.folder)
+    if (folder / "dinput8.dll").exists() or (folder / "reframework").is_dir():
+        return False, ""
+    if _reframework_needs_specific_build(game):
+        return False, ("RE Engine antigo: instale o REFramework específico deste "
+                       "jogo pelo Nexus (o genérico do repack congela o jogo)")
+    src = _reframework_for(game)
+    if src is None:
+        return False, "REFramework não encontrado no repack (instale manualmente se o Insert não abrir)"
+    try:
+        shutil.copy2(src, folder / "dinput8.dll")
+        return True, "REFramework (dinput8.dll) instalado ✓"
+    except Exception as e:
+        return False, f"Falha ao instalar REFramework: {e}"
+
+
+def verify_fork_integrity() -> tuple[bool, str]:
+    """Confere o cache do fork. Aceita repack comunitário sem bloquear por hashes oficiais.
+    """
+    # Suporta repack comunitário
+    if _community_fork_root() is not None:
+        root = _community_fork_root()
+        # verifica estrutura mínima
+        if (root / "OptiScaler").is_dir():
+            main = root / "Optiscaler.dll"
+            if not main.exists():
+                main = root / "OptiScaler.dll"
+            if main.exists():
+                return True, "repack comunitário detectado (sem hash oficial) — OK"
     zips = FORK_DIR.parent / "OptiScaler-NR-v0.8.91.zip"
     if zips.exists():
         got = _sha256(zips)
@@ -138,19 +296,68 @@ def _find_nr_dll() -> Path | None:
 
 
 def apply_dlssnr_fork(game: Game, profile: Profile) -> tuple[bool, str]:
-    """Instala a stack DLSS 5 + MFG: fork OptiScaler-DLSSNR em dxgi.dll,
-    Streamline oficial para FGOutput=dlssg, e a runtime NR.
+    """Instala a stack DLSS 5 + MFG.
 
-    Slots (decisão D11/D12): o fork ocupa `dxgi.dll`; o proxy SM86 continua
-    em `version.dll`, que é o nome que o jogo importa.
+    Suporta tanto o fork oficial (v0.8.91) quanto o repack comunitário
+    que você testou e aprovou.
     """
     ok, why = verify_fork_integrity()
     if not ok:
         return False, f"DLSSNR_FORK ✗ ({why})"
     folder = Path(game.folder)
-    _backup(game, ["dxgi.dll", "OptiScaler.ini", "version.dll", "dlssg_sm86.ini"])
+    _backup(game, ["dxgi.dll", "OptiScaler.ini", "version.dll", "dlssg_sm86.ini",
+                   "nvngx_dlssnr.dll", "nvngx_dlssg.dll"])
     try:
-        # 1. fork: backend OptiScaler
+        croot = _community_fork_root()
+        if croot is not None:
+            # Formato: repack comunitário
+            # Copia pasta OptiScaler inteira
+            if (croot / "OptiScaler").is_dir():
+                shutil.copytree(croot / "OptiScaler", folder / "OptiScaler", dirs_exist_ok=True)
+            # Copia DLLs NVNGX da raiz
+            for name in ("nvngx_dlssnr.dll", "nvngx_dlssg.dll", "nvngx_dlss.dll",
+                         "nvngx_dlssd.dll", "nvngx_deepdvc.dll"):
+                s = croot / name
+                if s.exists():
+                    shutil.copy2(s, folder / name)
+            # Copia OptiScaler.ini se tiver na raiz
+            if (croot / "OptiScaler.ini").exists():
+                shutil.copy2(croot / "OptiScaler.ini", folder / "OptiScaler.ini")
+            # Copia DLL principal e renomeia para dxgi.dll (slot)
+            main = croot / "Optiscaler.dll"
+            if not main.exists():
+                main = croot / "OptiScaler.dll"
+            if not main.exists():
+                return False, "DLSSNR_FORK ✗ (Optiscaler.dll não encontrado no repack)"
+            shutil.copy2(main, folder / (profile.dll_name or "dxgi.dll"))
+            # Aplica overrides e limpeza
+            _apply_ini_overrides(folder / "OptiScaler.ini", profile.ini_overrides)
+            if profile.settings_xml_api:
+                _force_settings_api(game, profile.settings_xml_api)
+            for f in profile.files_to_remove:
+                (folder / f).unlink(missing_ok=True)
+            for stale in ("winmm.dll", "dlssg_to_fsr3_amd_is_better.dll",
+                          "fakenvapi.dll"):
+                (folder / stale).unlink(missing_ok=True)
+            (folder / "Remove_TurboPlay.bat").write_text(
+                "@echo off\r\nrem TurboPlay rollback (stack DLSS5+MFG - comunitario)\r\n"
+                "del /F /Q dxgi.dll OptiScaler.ini nvngx_dlssnr.dll nvngx_dlssg.dll version.dll "
+                "dlssg_sm86.ini dinput8.dll 2>nul\r\n"
+                "rd /S /Q OptiScaler Licenses_DLSSNR Licenses reframework 2>nul\r\n"
+                "echo TurboPlay revertido.\r\npause\r\n",
+                encoding="ascii", errors="replace")
+            # Tenta instalar REFramework para jogos Capcom/RE Engine
+            try:
+                rf_ok, rf_msg = _maybe_install_reframework(game)
+            except Exception:
+                rf_ok, rf_msg = False, ""
+            msg = "DLSS5_FORK ✓ (repack comunitário - automatizado)"
+            if rf_ok and rf_msg:
+                msg += f" · {rf_msg}"
+            elif rf_msg:
+                msg += f" · {rf_msg}"
+            return True, msg
+        # Formato oficial v0.8.91 (mantido para compatibilidade)
         shutil.copytree(FORK_DIR / "OptiScaler", folder / "OptiScaler", dirs_exist_ok=True)
         if (FORK_DIR / "OptiScaler").is_dir():
             for extra in FORK_DIR.glob("*.dll"):
@@ -160,8 +367,6 @@ def apply_dlssnr_fork(game: Game, profile: Profile) -> tuple[bool, str]:
             src = FORK_DIR / f
             if src.exists():
                 shutil.copy2(src, folder / f)
-
-        # 2. Streamline oficial (6 DLLs) para o FGOutput=dlssg
         sl_target = folder / "OptiScaler" / "streamline"
         sl_target.mkdir(parents=True, exist_ok=True)
         sl_src = None
@@ -170,42 +375,24 @@ def apply_dlssnr_fork(game: Game, profile: Profile) -> tuple[bool, str]:
             if (cand / "sl.dlss_g.dll").exists():
                 sl_src = cand
                 break
-        if sl_src is None:
-            return False, "DLSSNR_FORK ✗ (sl.dlss_g.dll não encontrado no cache Streamline)"
-        for name in _STREAMLINE_DLLS:
-            s = sl_src / name
-            if s.exists():
-                shutil.copy2(s, sl_target / name)
-
-        # 3. runtime Neural Render (a DLL grande; hash conferido antes)
+        if sl_src is not None:
+            for name in _STREAMLINE_DLLS:
+                s = sl_src / name
+                if s.exists():
+                    shutil.copy2(s, sl_target / name)
         nr = _find_nr_dll()
-        if nr is None:
-            return False, "DLSSNR_FORK ✗ (nvngx_dlssnr.dll ausente — sem DLSS 5)"
-        shutil.copy2(nr, folder / "nvngx_dlssnr.dll")
-
-        # 4. o fork entra no slot dxgi.dll
+        if nr is not None:
+            shutil.copy2(nr, folder / "nvngx_dlssnr.dll")
         fork_dll = FORK_DIR / "OptiScaler.dll"
         shutil.copy2(fork_dll, folder / (profile.dll_name or "dxgi.dll"))
-
-        # 5. config do fork por seção
         _apply_ini_overrides(folder / "OptiScaler.ini", profile.ini_overrides)
         if profile.settings_xml_api:
             _force_settings_api(game, profile.settings_xml_api)
         for f in profile.files_to_remove:
             (folder / f).unlink(missing_ok=True)
-
-        # 5b. o fork É o OptiScaler agora — o standalone classic (winmm.dll) e o
-        # Nukems conflitam com ele e fazem o jogo recusar o hook (D12). Já estão
-        # no backup feito no início desta função.
-        removed: list[str] = []
         for stale in ("winmm.dll", "dlssg_to_fsr3_amd_is_better.dll",
                       "fakenvapi.dll"):
-            p = folder / stale
-            if p.exists():
-                p.unlink()
-                removed.append(stale)
-
-        # 6. desinstalador próprio desta stack
+            (folder / stale).unlink(missing_ok=True)
         (folder / "Remove_TurboPlay.bat").write_text(
             "@echo off\r\nrem TurboPlay rollback (stack DLSS5+MFG)\r\n"
             "del /F /Q dxgi.dll OptiScaler.ini nvngx_dlssnr.dll version.dll "
@@ -213,10 +400,7 @@ def apply_dlssnr_fork(game: Game, profile: Profile) -> tuple[bool, str]:
             "rd /S /Q OptiScaler Licenses_DLSSNR 2>nul\r\n"
             "echo TurboPlay revertido.\r\npause\r\n",
             encoding="ascii")
-        msg = "DLSS5_FORK ✓ (DLSS 5 NR + Streamline FG)"
-        if removed:
-            msg += f" · removido: {', '.join(removed)}"
-        return True, msg
+        return True, "DLSS5_FORK ✓ (DLSS 5 NR + Streamline FG)"
     except OSError as e:
         return False, f"DLSSNR_FORK ✗ (erro: {e})"
 

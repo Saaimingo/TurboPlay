@@ -142,6 +142,14 @@ def auto_optimize_new_games(dry_run: bool = False) -> dict:
                            "installed_dirs": (["OptiScaler", "Licenses_DLSSNR"]
                                               if "DLSSNR_FORK" in p.layers
                                               else ["D3D12_Optiscaler", "Licenses"])}
+            # Mods da biblioteca `mods/<Jogo>/` vão junto, na entrada do jogo
+            try:
+                from .mods import auto_install_for_game
+                m = auto_install_for_game(g.title, g.folder, Path(g.exe_path).name)
+                for name in m:
+                    applied.append((f"{g.title} · mod {name}", "mods"))
+            except Exception:
+                pass
             applied.append((g.title, p.decision))
     if not dry_run:
         _save_state(state)

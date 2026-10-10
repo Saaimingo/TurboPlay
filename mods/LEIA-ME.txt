@@ -1,0 +1,24 @@
+Como usar mods no TurboPlay
+===========================
+
+Dois jeitos:
+
+1) AUTOMÁTICO — biblioteca por jogo
+   mods/<Nome do Jogo>/MeuMod.zip
+   Na próxima vez que o jogo for otimizado ou aberto pelo TurboPlay,
+   o mod é instalado sozinho (1x por mod, registrado num manifest).
+
+   Nome da pasta: tanto faz maiúscula/acento — casa pelo título do jogo
+   ou pelo nome do exe (ex.: "RE3", "Red Dead Redemption 2").
+
+2) MANUAL — pelo botão "🧩 Instalar mod…" na aba JOGOS PC
+   Escolhe o jogo, escolhe o zip/RAR do Nexus, pronto.
+
+Destino é automático:
+   - zip com reframework/ → vai pra reframework/ do jogo (menu Insert lê)
+   - zip embrulhado (CoolMod/reframework/...) → desembrulha sozinho
+   - dll/ini na raiz → raiz do jogo
+
+Cada instalação fica registrada em <pasta do jogo>/turboinstall.mods.json.
+Pra remover um mod inteiro: apague os arquivos listados no manifest
+(a limpeza manual leva segundos e é mais segura do que adivinhar).

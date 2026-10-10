@@ -160,6 +160,8 @@ class TurboPlayApp:
         for f in ("Todos", "Otimizados", "Bloqueados"):
             ttk.Button(bar, text=f, style="Flat.TButton",
                        command=lambda v=f: self._set_filter(v)).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(bar, text="🧩  Instalar mod…", style="Flat.TButton",
+                   command=self._on_install_mod).pack(side=tk.LEFT, padx=(16, 6))
         self.lbl_count = tk.Label(bar, text="", bg=BG, fg=FG_DIM, font=("Segoe UI", 9))
         self.lbl_count.pack(side=tk.RIGHT)
 
@@ -350,6 +352,17 @@ class TurboPlayApp:
                 if console_item is None:
                     pre_launch({"id": gid})
                     game_obj = next((classify(c) for c in scan_all() if c.id == gid), None)
+                    if game_obj:
+                        # mods da biblioteca mods/<Jogo>/ — 1x por mod
+                        try:
+                            from .mods import auto_install_for_game
+                            installed = auto_install_for_game(
+                                game_obj.title, game_obj.folder,
+                                Path(game_obj.exe_path).name)
+                            for name in installed:
+                                self._log_safe(f"🧩 {title}: mod '{name}' instalado")
+                        except Exception:
+                            pass
                     popen, err = launch(game_obj) if game_obj else (None, "não encontrado")
                 else:
                     if console_item.get("bat"):
@@ -390,6 +403,60 @@ class TurboPlayApp:
             self.root.after(0, lambda: threading.Thread(
                 target=self._load_all, daemon=True).start())
         threading.Thread(target=work, daemon=True).start()
+
+    # ── mods ────────────────────────────────────────────────────────────────
+    def _on_install_mod(self) -> None:
+        """Diálogo: escolhe o jogo → escolhe o zip/RAR → instala."""
+        from tkinter import simpledialog, filedialog, messagebox
+        import src.mods as mods
+        if not self.games:
+            messagebox.showinfo("TurboPlay", "Nenhum jogo na biblioteca ainda.")
+            return
+        titles = sorted(g["title"] for g in self.games)
+        choice = simpledialog.askstring(
+            "Instalar mod",
+            "Pra qual jogo? (digite parte do nome):\n"
+            + "\n".join(titles[:12]) + ("\n…" if len(titles) > 12 else ""),
+            parent=self.root)
+        if not choice or not choice.strip():
+            return
+        q = choice.strip().lower()
+        matches = [g for g in self.games if q in g["title"].lower()]
+        if not matches:
+            messagebox.showerror("TurboPlay", f"Nenhum jogo casa com '{choice}'.")
+            return
+        if len(matches) > 1:
+            opts = "\n".join(f"{i+1}. {g['title']}" for i, g in enumerate(matches))
+            pick = simpledialog.askstring(
+                "Instalar mod", f"Vários jogos casam:\n{opts}\n\nNúmero:",
+                parent=self.root)
+            try:
+                g = matches[int(pick) - 1]
+            except (ValueError, TypeError, IndexError):
+                return
+        else:
+            g = matches[0]
+        arc = filedialog.askopenfilename(
+            title=f"Mod para {g['title']}",
+            filetypes=[("Mods", "*.zip *.rar *.7z"), ("Todos", "*.*")])
+        if not arc:
+            return
+        self.status.configure(text=f"Instalando mod em {g['title']}…")
+
+        def work() -> None:
+            folder = self._game_folder(g["id"])
+            r = mods.install_mod(g["title"], folder, arc)
+            msg = (f"🧩 {g['title']}: mod '{r.name}' — "
+                   + (f"{r.error}" if r.ok else f"FALHOU: {r.error}"))
+            self._log_safe(msg)
+            self.root.after(0, lambda: self.status.configure(text=msg))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _game_folder(self, gid: str) -> str:
+        for c in scan_all():
+            if c.id == gid:
+                return c.folder
+        return ""
 
     # ── carga ─────────────────────────────────────────────────────────────────
     def _on_library_changed(self) -> None:
