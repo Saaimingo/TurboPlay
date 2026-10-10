@@ -37,6 +37,9 @@ oficiais no GitHub, com SHA-256 pinado por versão no repositório de perfis.
 **Consequências:** parsing de PE/VDF feito à mão (struct/json); empacotamento
 futuro via PyInstaller → exe único.
 
+**Nota de escopo atual (2026-10):** o núcleo continua em stdlib; a GUI inclui
+validação local de capas via Pillow, declarado em `pyproject.toml`.
+
 ## 2026-09-21 · D5 · SAMBOX/RetroBat como cidadão de primeira classe
 
 **Decisão:** o scanner entende a estrutura de `.bat` do RetroBat/SAMBOX e
@@ -213,6 +216,9 @@ Steam cria subpasta em `common\` → dispara; ROM nova cai em `roms\ps1\` e **n�
 evento perdido. A pasta Inicializar é a via suportada, não toca registro e não acopla exe a
 persistência — que era exatamente o gatilho da heurística do Defender (D10).
 
-**Consequências:** `--dry-run` disponível em `apply` e `watch` para ver o que seria feito sem
-escrever nada (verificado: `installed.json` idêntico antes/depois). `autostart on|off|status`
-substitui a integração de registro.
+**Consequências:** `--dry-run` disponível em `apply` e `watch`: não instala camadas nem salva o
+estado, mas a descoberta ainda chama `is_writable()`, que cria e apaga um probe transitório nas
+pastas de jogos detectadas. Portanto, não é uma execução sem nenhuma escrita; o arquivo
+`installed.json` permanece inalterado. `scan` e `watch` também verificam a stack; essa verificação
+pode extrair automaticamente um RAR encontrado em `Downloads` ou `forks/` para uma pasta de cache
+nessas localizações. `autostart on|off|status` substitui a integração de registro.

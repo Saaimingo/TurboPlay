@@ -108,8 +108,9 @@ def auto_optimize_new_games(dry_run: bool = False) -> dict:
     """Pipeline incremental: otimiza só o que ainda não está no estado.
 
     Regra de segurança: jogo bloqueado (MSIX), sem escrita, anti-cheat ou não-DX12
-    é REGISTRADO como NOOP — para não ser reprocessado a cada passada — mas sem
-    nenhuma escrita no disco.
+    é REGISTRADO como NOOP para não ser reprocessado. Nenhum arquivo do jogo é
+    alterado; a descoberta ainda pode criar/remover probe de permissão, e uma
+    execução normal grava o estado NOOP em `installed.json`.
     """
     gpu = detect_gpu()
     state = _load_state()

@@ -130,8 +130,8 @@ def _install(g, p, state: dict, dry_run: bool) -> list[str]:
 def run_full(auto_apply: bool = True, dry_run: bool = False) -> dict:
     """Executa o ciclo completo e devolve resumo para GUI/CLI.
 
-    `dry_run=True` nunca escreve em jogo nem em `installed.json`: serve para
-    responder "o que o TurboPlay faria?" antes deauthorize qualquer coisa.
+    `dry_run=True` não instala camadas nem salva `installed.json`. A descoberta
+    ainda testa permissões com um probe transitório nas pastas detectadas.
     """
     gpu = detect_gpu()
     games = [classify(g) for g in scan_all()]
@@ -156,7 +156,9 @@ def run_full(auto_apply: bool = True, dry_run: bool = False) -> dict:
             if current:
                 if not dry_run:
                     reconfigure_optiscaler(g, p)
-                entry["notes"].append("já otimizado ✓ (config revalidada)")
+                entry["notes"].append(
+                    "estado já otimizado ✓ (dry-run; sem reconfiguração)" if dry_run
+                    else "já otimizado ✓ (config revalidada)")
                 entry["applied"] = True
             else:
                 entry["notes"].append(f"reaplicando: {why}")

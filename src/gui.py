@@ -1,7 +1,7 @@
 """TurboPlay — GUI: front-end de jogos (PC + emulados).
 
 Visual de launcher de verdade: tema escuro, capas, grade de cards, busca e
-filtros por provedor. Continua tkinter puro, sem dependência (D4).
+filtros por provedor. A interface usa tkinter; capas locais dependem de Pillow.
 
 Princípio de honestidade visual: um jogo bloqueado (Game Pass, pasta sem
 escrita, anti-cheat) aparece com o motivo — nunca com um ✓ enganoso.
@@ -16,6 +16,7 @@ from pathlib import Path
 from tkinter import ttk
 
 from .applier import verify_fork_integrity
+from .covers import fallback_identity, get_cover, set_cover
 from .classifier import classify
 from .consolelib import scan_console_library
 from .emulaunch import launch_emulated
@@ -56,6 +57,7 @@ class TurboPlayApp:
         self.console_items: list[dict] = []
         self._console_rows: list[tuple] = []
         self._cards: list[tuple[tk.Frame, dict]] = []
+        self._cover_images: dict[str, tuple[tuple[str, int, int, int], tk.PhotoImage]] = {}
 
         self._build()
         self._style()
@@ -207,10 +209,23 @@ class TurboPlayApp:
         cover = tk.Frame(f, bg=BG_HOVER, height=130)
         cover.pack(fill=tk.X)
         cover.pack_propagate(False)
-        label = "🔒" if blocked else ("▶" if ok else "·")
-        colour = LOCKED if blocked else (ACCENT if ok else FG_DIM)
-        tk.Label(cover, text=label, bg=BG_HOVER, fg=colour,
-                 font=("Segoe UI", 26, "bold")).pack(expand=True)
+        # capas manuais são locais; ID inválido/corrompido apenas usa a genérica.
+        try:
+            cover_path = get_cover(g.get("id", ""))
+        except ValueError:
+            cover_path = None
+        if cover_path:
+            try:
+                image = self._cover_photo(g.get("id", ""), cover_path)
+                image_label = tk.Label(cover, image=image, bg=BG_HOVER)
+                image_label.image = image
+                image_label.pack(expand=True)
+            except (OSError, tk.TclError):
+                self._cover_images.pop(g.get("id", ""), None)
+                self._cover_placeholder(cover, g.get("id", ""), g["title"])
+        else:
+            self._cover_images.pop(g.get("id", ""), None)
+            self._cover_placeholder(cover, g.get("id", ""), g["title"])
 
         tk.Label(f, text=g["title"][:26], bg=BG_CARD, fg=FG,
                  font=("Segoe UI", 10, "bold"), anchor="w",
@@ -225,12 +240,65 @@ class TurboPlayApp:
             tk.Label(f, text="✓ DLSS 5 + MFG", bg=BG_CARD, fg=ACCENT_HI,
                      font=("Segoe UI", 8, "bold"), anchor="w").pack(fill=tk.X, padx=10)
 
+        ttk.Button(f, text="Capa…", style="Flat.TButton",
+                   command=lambda game=g: self._on_choose_cover(game)).pack(
+                       anchor="w", padx=7, pady=(4, 5))
         f.bind("<Double-Button-1>", lambda e, gg=g: self._play_native(gg))
         f.bind("<Enter>", lambda e: f.configure(highlightbackground=ACCENT, bg=BG_HOVER))
         f.bind("<Leave>", lambda e: f.configure(highlightbackground=BORDER, bg=BG_CARD))
         for child in f.winfo_children():
+            if isinstance(child, ttk.Button):
+                continue
             child.bind("<Double-Button-1>", lambda e, gg=g: self._play_native(gg))
         return f
+
+    def _cover_photo(self, game_id: str, path: Path) -> tk.PhotoImage:
+        """Carrega/redimensiona uma capa uma vez; invalida por stat e identidade."""
+        stat = path.stat()
+        signature = (str(path), stat.st_size, stat.st_mtime_ns, stat.st_ino)
+        cached = self._cover_images.get(game_id)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+        image = tk.PhotoImage(file=str(path))
+        factor = max(1, (image.width() + 199) // 200,
+                     (image.height() + 129) // 130)
+        if factor > 1:
+            image = image.subsample(factor, factor)
+        self._cover_images[game_id] = (signature, image)
+        return image
+
+    def _cover_placeholder(self, parent: tk.Frame, game_id: str, title: str) -> None:
+        """Capa genérica local, visualmente estável e explicitamente não oficial."""
+        background, accent = fallback_identity(game_id, title)
+        parent.configure(bg=background)
+        tk.Label(parent, text="CAPA LOCAL · NÃO OFICIAL", bg=background, fg=accent,
+                 font=("Segoe UI", 8, "bold")).pack(anchor="nw", padx=10, pady=(10, 2))
+        tk.Label(parent, text=(title or "Jogo")[:34], bg=background, fg=FG,
+                 font=("Segoe UI", 13, "bold"), wraplength=176,
+                 justify=tk.LEFT, anchor="w").pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
+        tk.Label(parent, text="TURBOPLAY", bg=background, fg=accent,
+                 font=("Segoe UI", 8, "bold")).pack(anchor="se", padx=10, pady=(0, 8))
+
+    def _on_choose_cover(self, game: dict) -> None:
+        from tkinter import filedialog, messagebox
+        if getattr(self, "_cover_dialog_open", False):
+            return
+        self._cover_dialog_open = True
+        try:
+            source = filedialog.askopenfilename(
+                parent=self.root, title=f"Escolher capa — {game['title']}",
+                filetypes=[("Imagens PNG ou GIF", "*.png *.gif")])
+        finally:
+            self._cover_dialog_open = False
+        if not source:
+            return
+        try:
+            set_cover(game["id"], source)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Capa inválida", str(exc), parent=self.root)
+            return
+        self.status.configure(text=f"Capa atualizada: {game['title']}")
+        self._render_pc_grid()
 
     def _render_pc_grid(self) -> None:
         for w in self.cards_frame.winfo_children():

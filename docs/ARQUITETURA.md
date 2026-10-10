@@ -43,12 +43,15 @@ Regras (ordem = prioridade):
 SE anticheat                          → NOOP (nunca mexer)
 SE !api==DX12                         → rota alternativa (Lossless/XeSS-DP4a/emulador)
 SE gpu==RTX50                         → MFG nativo já existe; só DLSS Swapper se faltar DLL
-SE gpu==RTX20/30/40 E fg_native       → [SM86 proxy]  (destrava MFG no menu do jogo)
-SE gpu==RTX20/30/40 E !fg_native E upscaler==DLSS2
-                                      → [OptiScaler + DLSS Enabler + SM86]  (caso RDR2)
-SE gpu==RTX20/30/40 E upscaler==NONE  → [OptiScaler OptiFG] ou rota ReShade/RenoDX
+SE gpu==RTX20/30/40 E DX12            → [DLSSNR_FORK + SM86] (DLSS5_MFG), com ou sem FG nativa
+SE jogo RE Engine pré-DLSS3           → FGOutput=fsrfg + FGNvngxReplacement=FFX + HUDFix=true
 SE gpu==AMD/Intel                     → [OptiScaler XeFG/FSR-FG] ou XeSS-DP4a
 ```
+
+Para NVIDIA série 20/30/40 em DX12, a decisão é `DLSS5_MFG` tanto com quanto
+sem FG nativa. A classificação de FG nativa não remove a camada do fork. A
+exceção por executável RE Engine pré-DLSS3 força OptiFG (`fsrfg`), pois esses
+jogos podem embarcar DLLs de FG sem chamar a API que inicia a FG nativa.
 
 Perfis específicos por jogo (JSON) corrigem exceções — ex. RDR2:
 `winmm.dll`, `remove fakenvapi`, `DX12 required`, `HUDFix se flicker`.

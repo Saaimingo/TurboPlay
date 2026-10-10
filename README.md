@@ -31,7 +31,8 @@ e o jogador só percebe que "o PC tá rodando tudo liso e bonito".
 
 ## Stack técnica
 
-- Python 3 (stdlib only no core — sem dependências pra quem instala).
+- Python 3 (o core usa stdlib; Pillow é dependência declarada porque a GUI importa
+  o módulo de capas locais, cujo uso visual é opcional).
 - `pyproject.toml`: metadata + entry point `turboplay = "src.main:main"`.
 - Scanner: Steam (`libraryfolders.vdf`) + **SAMBOX/RetroBat** (sabe ler os `.bat`
   de atalho que apontam pra jogos PC nativos — ninguém mais faz isso) + Xbox/Store +
@@ -135,12 +136,12 @@ TurboPlay/
 
 ```bash
 # CLI (se você tiver o script/main.py rodando como module ou executável)
-turboplay scan              # lista o que ele enxergou, por provedor, e o que faria
+turboplay scan              # lista jogos/decisões; pode testar escrita e extrair fork RAR em cache local
 turboplay scan --json       # saida machine-readable
-turboplay apply --dry-run   # mostra o que faria, sem escrever em nenhum jogo
+turboplay apply --dry-run   # não aplica camadas nem salva estado; a descoberta ainda faz probe transitório de permissão nas pastas detectadas
 turboplay apply             # aplica de verdade (exige integridade da stack)
 turboplay rollback --all    # reverte tudo
-turboplay watch --dry-run   # vigia e avisa, sem instalar
+turboplay watch --dry-run   # sem instalar/salvar estado; verifica stack e pode extrair fork RAR; descoberta testa escrita
 turboplay autostart on      # atalho na pasta Inicializar (sem registro)
 
 # GUI
@@ -151,3 +152,4 @@ turboplay                 # abre o launcher
 
 - `https://github.com/Saaimingo/TurboPlay` — público, sem fork.
 - Branch padrão: `v2.6-fg-re3-optifg` (feat OptiFG RE Engine + sistema de mods).
+- Relatório de auditoria local (10/10/2026): [`docs/RELATORIO-AUDITORIA-2026-10-10.md`](docs/RELATORIO-AUDITORIA-2026-10-10.md).

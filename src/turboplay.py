@@ -1,7 +1,7 @@
 """TurboPlay — CLI de orquestração.
 
 Uso:
-  python -m src.turboplay scan              # lista jogos + decisão (dry-run)
+  python -m src.turboplay scan              # lista jogos; pode testar escrita e extrair fork RAR em cache local
   python -m src.turboplay scan --json       # saída machine-readable
   python -m src.turboplay apply             # aplica automaticamente nos jogos
   python -m src.turboplay rollback --all    # reverte tudo
@@ -75,7 +75,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
 def cmd_apply(args: argparse.Namespace) -> int:
     if args.dry_run:
-        print("=== DRY-RUN: nada será escrito nos jogos ===\n")
+        print("=== DRY-RUN: sem instalação nem gravação do estado; "
+              "a descoberta ainda cria/remove probe transitório de permissão ===\n")
         result = run_full(auto_apply=True, dry_run=True)
     else:
         ok, why = verify_fork_integrity()
@@ -147,11 +148,12 @@ def cmd_autostart(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="turboplay")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    s = sub.add_parser("scan")
+    s = sub.add_parser(
+        "scan", help="descobre jogos; pode testar escrita nas pastas detectadas e extrair fork RAR em cache local")
     s.add_argument("--json", action="store_true")
     ap_apply = sub.add_parser("apply")
     ap_apply.add_argument("--dry-run", action="store_true",
-                          help="mostra o que faria, sem escrever nos jogos")
+                          help="sem instalar/salvar estado; descoberta cria/remove probe transitório")
     r = sub.add_parser("rollback")
     r.add_argument("--all", action="store_true")
     w = sub.add_parser("watch")
@@ -159,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
     w.add_argument("--silent", action="store_true")
     w.add_argument("--once", action="store_true")
     w.add_argument("--dry-run", action="store_true",
-                   help="vigia e avisa, mas não instala nada")
+                   help="sem instalar/salvar estado; descoberta testa escrita e verificação da stack pode extrair fork RAR em cache local")
     au = sub.add_parser("autostart", help="liga/desliga o início automático (pasta Inicializar)")
     au.add_argument("action", choices=["on", "off", "status"])
     args = ap.parse_args(argv)

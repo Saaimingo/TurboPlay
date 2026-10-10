@@ -186,15 +186,13 @@ def decide(game: Game, gpu: dict) -> Profile:
         # ficam disponíveis igual ao setup manual.
         #
         # FG Output por tipo de jogo (achado 09/10 com RE3):
-        # - COM FG nativa: FGOutput=DLSSG (delega pro Streamline/DLSS-G;
-        #   o jogo pede frames, rota estável MFG até 4x)
-        # - SEM FG nativa (RE3 2020 etc.): FGOutput=fsrfg via OptiFG —
-        #   o jogo nunca chama slDLSSGSetState, então rota dlssg fica
-        #   parada (44 fps medido, zero frames gerados). FSR3-FG
-        #   sintetiza frames do upscaler sem o jogo pedir nada.
-        #   Experimental segundo a wiki do OptiScaler (HUDFix pode ser
-        #   necessário em jogo com HUD complexo), mas é a única rota que
-        #   entrega FG aqui.
+        # - RE Engine pré-DLSS3: força FGOutput=fsrfg via OptiFG mesmo se o
+        #   classificador detectar DLLs FG embarcadas; esses jogos não chamam
+        #   slDLSSGSetState (44 fps medido, zero frames gerados pela rota dlssg).
+        # - Outros jogos DX12: mantém FGOutput=dlssg do fork, com ou sem
+        #   FG nativa detectada. Não inferir FSR3-FG para esses jogos.
+        # OptiFG é experimental segundo a wiki do OptiScaler; HUDFix pode ser
+        # necessário em jogos com HUD complexo.
         ini = dict(_FORK_INI)
         # RE Engine antigo (RE2/RE3/RE7/RE8/DMC5): o jogo EMBARCA os DLLs do
         # DLSS-G, então o classificador reporta fg_native=True — mas o jogo
@@ -206,9 +204,12 @@ def decide(game: Game, gpu: dict) -> Profile:
             ini["FrameGen/FGOutput"] = "fsrfg"
             ini["FrameGen/FGNvngxReplacement"] = "FFX"
             ini["OptiFG/HUDFix"] = "true"
+            fg_route = "FSR3-FG via OptiFG (RE Engine pré-DLSS3)"
+        else:
+            fg_route = "FGOutput=dlssg"
         return _mk_profile(
             game, "DLSS5_MFG",
-            f"DLSS 5 Neural Render + {'FSR3-FG (OptiFG, jogo sem FG nativa)' if not game.fg_native else 'MFG NVIDIA (2x-6x, rota dlssg)'} na série {series}",
+            f"DLSS 5 Neural Render + MFG NVIDIA ({fg_route}) na série {series}",
             layers=[FORK_LAYER, "SM86"],
             ini_overrides=ini)
 

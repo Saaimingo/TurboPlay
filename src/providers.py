@@ -19,6 +19,7 @@ import hashlib
 import os
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 from .models import Game
@@ -34,12 +35,14 @@ def game_id(path: str, prefix: str = "tp") -> str:
 def is_writable(folder: str) -> bool:
     """A pasta aceita escrita DE VERDADE? Testa criando e apagando um arquivo.
 
+    Usa um nome temporário exclusivo para nunca sobrescrever/remover arquivo alheio.
     Não confiar em ACL nem em is_admin(): a resposta real é tentar gravar.
     """
-    probe = Path(folder) / ".tp_write_probe.tmp"
     try:
-        probe.write_text("x", encoding="ascii")
-        probe.unlink()
+        with tempfile.NamedTemporaryFile(
+                mode="w", encoding="ascii", prefix=".tp_write_probe_",
+                suffix=".tmp", dir=folder, delete=True) as probe:
+            probe.write("x")
         return True
     except OSError:
         return False
@@ -188,7 +191,8 @@ def _epic_roots() -> list[Path]:
         out = subprocess.run(
             ["reg", "query", r"HKLM\SOFTWARE\WOW6432Node\Epic Games",
              "/s", "/f", "Location", "/v", "/t", "REG_SZ"],
-            capture_output=True, text=True, timeout=10)
+            capture_output=True, text=True, encoding="mbcs", errors="replace",
+            timeout=10)
         for line in out.stdout.splitlines():
             m = re.search(r"REG_SZ\s+(.+?)\s*$", line)
             if m:
