@@ -41,7 +41,7 @@ Em uma etapa anterior, scans invocaram `is_writable()` e criaram/removeram `.tp_
 - **Computer Use:** não foi habilitado nem exercitado.
 - **Build:** gerado em Temp, não executado nem validado como distribuição funcional.
 - **Python 3.8:** somente gramática sintática foi verificada; sem runtime real.
-- **Git:** nenhuma alteração foi commitada nesta nota. O registro do commit/push da branch, se realizado, permanece no histórico GitHub.
+- **Git:** alterações registradas no commit `b207773` e enviadas para `origin/feat/turboplay-optiscaler-ui`; a leitura de volta confirmou o mesmo hash local e remoto. Sem merge, PR ou release.
 
 ## Arquivos alterados na árvore local observada
 
